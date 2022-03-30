@@ -31,8 +31,7 @@ GLuint compile_shader(char * name, int shadertype) {
 
     GLint success;
     glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-    if(!success)
-    {
+    if(!success) {
         die("Couldn't compile shader");
     }
     return shader;
@@ -46,8 +45,7 @@ GLuint create_program(int num, int *shaders) {
     glLinkProgram(prog);
     int success;
     glGetProgramiv(prog, GL_LINK_STATUS, &success);
-    if (!success)
-    {
+    if (!success) {
         die("Link failure\n");
     }
     return prog;
@@ -55,19 +53,19 @@ GLuint create_program(int num, int *shaders) {
 
 Window create_window(Display *d) {
     static int visual_attribs[] = {
-        GLX_X_RENDERABLE    , True,
-        GLX_DRAWABLE_TYPE   , GLX_WINDOW_BIT,
-        GLX_RENDER_TYPE     , GLX_RGBA_BIT,
-        GLX_X_VISUAL_TYPE   , GLX_TRUE_COLOR,
-        GLX_RED_SIZE        , 8,
-        GLX_GREEN_SIZE      , 8,
-        GLX_BLUE_SIZE       , 8,
-        GLX_ALPHA_SIZE      , 8,
-        GLX_DEPTH_SIZE      , 0,
-        GLX_STENCIL_SIZE    , 0,
-        GLX_DOUBLEBUFFER    , True,
-        //GLX_SAMPLE_BUFFERS  , 1,
-        //GLX_SAMPLES         , 4,
+        GLX_X_RENDERABLE     , True,
+        GLX_DRAWABLE_TYPE    , GLX_WINDOW_BIT,
+        GLX_RENDER_TYPE      , GLX_RGBA_BIT,
+        GLX_X_VISUAL_TYPE    , GLX_TRUE_COLOR,
+        GLX_RED_SIZE         , 8,
+        GLX_GREEN_SIZE       , 8,
+        GLX_BLUE_SIZE        , 8,
+        GLX_ALPHA_SIZE       , 8,
+        GLX_DEPTH_SIZE       , 0,
+        GLX_STENCIL_SIZE     , 0,
+        GLX_DOUBLEBUFFER     , False,
+        /* GLX_SAMPLE_BUFFERS, 1, */
+        /* GLX_SAMPLES       , 4, */
         None
     };
 
@@ -115,8 +113,9 @@ Window create_window(Display *d) {
     };
 
     Window win =
-        XCreateWindow(d, RootWindow(d, vi->screen), 0, 0, 600, 600, 0, vi->depth,
+        XCreateWindow(d, RootWindow(d, vi->screen), 0, 0, 1920, 1080, 0, vi->depth,
                 InputOutput, vi->visual, CWBorderPixel|CWColormap|CWEventMask, &swa);
+    XSelectInput(d, win, KeyPressMask | ExposureMask | StructureNotifyMask | ButtonPressMask);
     if(!win) {
         die("window");
     }

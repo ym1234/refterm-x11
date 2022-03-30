@@ -1,11 +1,19 @@
 #include <stdio.h>
+#include <fcntl.h>
 #include <unistd.h>
+#include <errno.h>
 #include <time.h>
 #include <stdlib.h>
 #include <sys/time.h>
 #include <wchar.h>
 #include <locale.h>
 #include <stdarg.h>
+#include <pty.h>
+#include <assert.h>
+#include <signal.h>
+#include <sys/types.h>
+#include <pwd.h>
+#include <poll.h>
 
 void die(char *format, ...) {
     va_list ap;
@@ -16,6 +24,7 @@ void die(char *format, ...) {
 }
 
 #include "freetype.c"
+#include "tty.c"
 #include "ogl.c"
 
 void clear_screen(unsigned int *screen, int width, int height) {
@@ -38,29 +47,51 @@ unsigned int *update_screen(int width, int height) {
     return my_vertices;
 }
 
-char *render(int columns, int rows, unsigned int *screen, char *b) {
-    char c;
-    int y = 0;
-    for (int x = 0; x * y < columns * rows && (c = *b); ++x, ++b) {
-        if ((c == '\n') || x / columns) {
-            y++;
-            if (c == '\n') {
-                x = -1;
-                continue;
-            } else {
-                x = 0;
-            }
-        }
-        screen[4 * (y * columns) + 4 * x] = (c - 32) % 10;
-        screen[4 * (y * columns) + 4 * x + 1] = (c - 32) / 10;
-        /* screen[4 * (y * columns) + 4 * x + 2] |= 0x08000000; */
-    }
-    return b;
+char *render(int columns, int rows, unsigned int *screen, char* start, char *b) {
+	for (int i = rows - 1; i >= 0; --i) {
+		for (int j = columns - 1; j >= 0; --j) {
+			/* char c = *(b++); */
+			/* if () { */
+			/* 	--b; */
+			/* 	goto out; */
+			/* } else if (c == '\n') { */
+			char c = *(b--);
+			if (b == start) {
+				goto out;
+			}
+			if (c == '\n') {
+				j = -1;
+				continue;
+			}
+			int z = 4 * ((i * columns) + j);
+			screen[z] = (c - 32) % 10;
+			screen[z + 1] = (c - 32) / 10;
+		}
+	}
+out:
+	return b;
 }
 
-int main(void) {
+
+void prep_tex(unsigned int tex, int texnum) {
+    glActiveTexture(GL_TEXTURE0 + texnum);
+    glBindTexture(GL_TEXTURE_2D, tex);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_LOD, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LOD, 0);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+}
+
+int main(int argc, char *argv[]) {
     setbuf(stdout, NULL);
     setlocale(LC_ALL, "C.UTF-8");
+	assert(argc > 1);
+
 
     Display *d = XOpenDisplay(NULL);
     if (d == NULL) {
@@ -73,11 +104,11 @@ int main(void) {
     if(FT_Init_FreeType(&library)) {
         die("Couldn't load freetype");
     }
-    /* FTFont font = load_font(library, "/home/ym/.local/share/fonts/curieMedium.otb", 0, 12); */
+    FTFont font = load_font(library, "/home/ym/.local/share/fonts/curieMedium.otb", 0, 12);
     /* FTFont font = load_font(library, "/usr/share/fonts/misc/ter-u28b.otb", 0, 16); */
-    FTFont font = load_font(library, "/usr/share/fonts/noto/NotoSansMono-Regular.ttf", 0, 16);
-
-    malloc(1000000);
+    /* FTFont font = load_font(library, "/usr/share/fonts/liberation/LiberationMono-Regular.ttf", 0, 16); */
+    /* FTFont font = load_font(library, "/usr/share/fonts/TTF/Roboto-Regular.ttf", 0, 16); */
+    /* FTFont font = load_font(library, "/usr/share/fonts/noto/NotoSansMono-Regular.ttf", 0, 16); */
 
     int shaders[2] = { compile_shader("grid.v.glsl", GL_VERTEX_SHADER), compile_shader("grid.f.glsl", GL_FRAGMENT_SHADER) };
     unsigned int prog = create_program(2, shaders);
@@ -111,54 +142,28 @@ int main(void) {
     glClearColor(0x1d, 0x1f, 0x21, 0xff);
     glClear(GL_COLOR_BUFFER_BIT);
     glUniform2ui(8, 16/2 - 16/10, 16/2 + 16/10); // StrikeThrough
-    /* glUniform2ui(9, font.cellheight - font.descent + font.underline - (int)(font.underline_thickness  / 2.0 + 0.5),  font.cellheight - font.descent + font.underline - (int)(font.underline_thickness  / 2.0 + 0.5) + font.underline_thickness); // underline */
-    glUniform2ui(9, 10, 2);
+    glUniform2ui(9, font.cellheight - font.descent + font.underline - (int)(font.underline_thickness  / 2.0 + 0.5),  font.cellheight - font.descent + font.underline - (int)(font.underline_thickness  / 2.0 + 0.5) + font.underline_thickness); // underline
+    /* glUniform2ui(9, 10, 2); */
 
-    glUniform1i(1, 0); // Glyphs texture
-    glUniform1i(2, 1); // Terminal Cells texture
-    glEnable(GL_MULTISAMPLE);
+
     unsigned int tex[2];
-
     glGenTextures(2, tex);
 
     glUniform1i(1, 0);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, tex[0]);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_LOD, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LOD, 0);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_R, GL_REPEAT);
+    prep_tex(tex[0], 0);
 
     float *data = render_ascii(font, library);
-    /* glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, face->glyph->bitmap.width * 10, face->glyph->bitmap.rows * 10, 0, GL_RGBA, GL_FLOAT, data); */
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, font.cellwidth * 10, font.cellheight * 10, 0, GL_RGBA, GL_FLOAT, data);
 
     glUniform1i(2, 1);
-    glActiveTexture(GL_TEXTURE0 + 1);
-    glBindTexture(GL_TEXTURE_2D, tex[1]);
+    prep_tex(tex[1], 1);
 
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_LOD, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LOD, 0);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glFinish();
 
 
     XWindowAttributes gwa;
     XGetWindowAttributes(d, win, &gwa);
+
     int columns = (gwa.width - 4) / font.cellwidth;
     int rows = (gwa.height - 4) / font.cellheight;
     unsigned int *my_vertices = update_screen(columns, rows);
@@ -172,12 +177,25 @@ int main(void) {
 
     int width = gwa.width, height = gwa.height;
 
-    char *screen = calloc(columns * rows, sizeof(char));
-    strcpy(screen, "The quick brown fox jumps over the lazy dog () {} +- `~ :; <=>? \"");
-    int pos = strlen(screen);
+	int cmdfd = ttynew("/bin/sh", argv+1);
+
+	fd_set rfd;
+	FD_ZERO(&rfd);
+	FD_SET(cmdfd, &rfd);
+
+	int flags = fcntl(cmdfd, F_GETFL, 0);
+	fcntl(cmdfd, F_SETFL, flags | O_NONBLOCK);
+
+#define BUFFER_SIZE 0xFFFFFFFF
+    char *screen = calloc(BUFFER_SIZE, sizeof(char));
+	screen[0] = '~' + 1;
+	int pos = 0;
+	int scroll = 0;
     size_t num_frames = 1;
     double frametime_total = 0;
     size_t sum_fps = 0;
+
+
     while(1) {
         gettimeofday(&time, NULL);
         long start_time = 1000000 * time.tv_sec + time.tv_usec;
@@ -185,24 +203,41 @@ int main(void) {
         int pending = XPending(d);
         while (pending) {
             XNextEvent(d, &xev);
+			if (xev.type == ButtonPress){
+				switch (xev.xbutton.button){
+					case Button4:
+						if(scroll) {
+							--scroll;
+						}
+						while (scroll && screen[--scroll] != '\n');
+						if (scroll) {
+							++scroll;
+						}
+						/* printf("up"); */
+						break;
+					case Button5:
+						while (scroll < pos && screen[scroll++] != '\n') {
+						}
+						/* printf("down"); */
+						break;
+					default:
+				}
+			}
             if (xev.type == ConfigureNotify) {
                 XGetWindowAttributes(d, win, &gwa);
                 if (gwa.width == width && gwa.height == height) {
                     pending--;
                     continue;
                 }
-                int new = ((gwa.width - 4) / font.cellwidth) *  ((gwa.height - 4) / font.cellheight);
-                screen = realloc(screen,  new);
-                if (columns * rows < new) {
-                    for (int i = columns * rows; i < new; i++) {
-                        screen[i] = 0;
-                    }
-                }
+
                 columns = (gwa.width - 4) / font.cellwidth;
                 rows = (gwa.height - 4) / font.cellheight;
+                printf("columns: %d, rows: %d\n", columns, rows);
                 free(my_vertices);
+
                 my_vertices = update_screen(columns, rows);
                 width = gwa.width, height = gwa.height;
+
                 glScissor(0, 0, gwa.width, gwa.height);
                 glEnable(GL_SCISSOR_TEST);
                 glViewport(0, 0, gwa.width, gwa.height);
@@ -226,8 +261,58 @@ int main(void) {
             pending--;
         }
 
+		// TODO(ym):
+		/* struct timeval tv = {}; */
+		/* tv.tv_sec = 10; */
+		/* tv.tv_usec = 0; */
+		/* int r = select(cmdfd+1, &rfd, NULL, NULL, &tv); */
+		/* printf("%d\n", r); */
+		/* if (r < 0) { */
+		/* 	if (errno == EINTR) */
+		/* 		continue; */
+		/* 	die("select failed: %s\n", strerror(errno)); */
+		/* } else if (r > 0) { */
+		/* 	int k = read(cmdfd, screen + pos, r); */
+		/* 	printf("Read %d, %d, %s, %s\n", r, k, strerror(errno), screen + pos); */
+		/* 	if (k > 0) { */
+		/* 		screen[pos + k] = '~' + 1; */
+		/* 		pos += k; */
+		/* 	} */
+		/* } */
+		/* printf("%d\n", r); */
+		/* printf("Here\n"); */
+
+		// TODO(ym):
+		/* int n = 0; */
+		/* if ((n = poll(&cmdfd, 1, -1)) >= 0) { */
+		/* 	/1* if (!((screen + pos + n) >= BUFFER_SIZE)) { *1/ */
+		/* 	printf("%s\n", strerror(errno)); */
+		/* 	errno = 0; */
+		/* 		int k = read(cmdfd, screen + pos, n); */
+		/* 		printf("Read %d, %d, %s, %s\n", n, k, strerror(errno), screen + pos); */
+		/* 		if (k > 0) { */
+		/* 			screen[pos + k] = '~' + 1; */
+		/* 			pos += k; */
+		/* 		} */
+		/* 	/1* } *1/ */
+		/* } */
+		/* errno = 0; */
+
+
+		errno = 0;
+		if (pos < BUFFER_SIZE) {
+			int k = read(cmdfd, screen + pos, BUFFER_SIZE - pos);
+			if (k > 0) {
+				screen[pos + k] = '\n';
+				screen[pos + k + 1] = '~' + 1;
+				pos += k + 1;
+				/* printf("Read %d, %d, %s, %s\n", 0, k, strerror(errno), screen + pos - k); */
+				/* fflush(stdout); */
+			}
+		}
+
         clear_screen(my_vertices, columns, rows);
-        char *c = render(columns, rows, my_vertices, screen);
+        char *c = render(columns, rows, my_vertices, screen, screen - scroll + pos);
 
         snprintf(framerate_c, 1000, "FPS: %5d, mSPF: %f, aFPS: %f, amSPF %f, columns: %d, rows: %d", framerate, frametime * 100, (double) sum_fps / num_frames, (double) frametime_total / num_frames, columns, rows);
         size_t framelen = strlen(framerate_c);
@@ -238,28 +323,26 @@ int main(void) {
             my_vertices[idx] = c % 10;
             my_vertices[idx + 1] = c / 10;
         }
+
         /* glTexSubImage2D(GL_TEXTURE_2D, 0, columns - framelen, rows - 1, framelen, 1, GL_RGBA_INTEGER, GL_UNSIGNED_INT, my_vertices + (columns * rows * 4 - 4 * framelen)); */
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, columns, rows, GL_RGBA_INTEGER, GL_UNSIGNED_INT, my_vertices);
 
         {
             glDrawArrays(GL_TRIANGLES, 0, 3);
             glXSwapBuffers(d, win);
+            /* glFinish(); */
         }
 
         gettimeofday(&time, NULL);
         long end_time = 1000000 * time.tv_sec + time.tv_usec;
-        frametime = ((double)(end_time - start_time) / 1000000);
 
-        int new_framerate = (int) (1 / frametime);
-        double thing = (((double)framerate - new_framerate) / framerate);
-        if (thing > 0.50) {
-            printf("%f framerate decrease, current: %d, previous: %d, rate\n", thing, new_framerate, framerate);
-        }
-        framerate = (int)new_framerate;
+        frametime = ((double)(end_time - start_time) / 1000000);
+        framerate = (int) (1 / frametime);
 
         sum_fps += framerate;
         frametime_total += frametime;
         ++num_frames;
+		/* usleep(1000000); */
     }
 
     glDeleteVertexArrays(1, &VAO);

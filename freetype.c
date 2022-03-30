@@ -15,10 +15,11 @@ typedef struct {
     size_t underline_thickness;
 } FTFont;
 
-#define CHECK(x) \
+#define FT_CHECK(x) \
     do {\
+		FT_Error error;\
         if (error = (x)) {\
-            die("%s:%d %x, %s\n", __FILE__, __LINE__, error, FT_Error_String(error));\
+            die("%s:%d 0x%x, %s\n", __FILE__, __LINE__, error, FT_Error_String(error));\
         }\
     } while (0)
 
@@ -35,13 +36,13 @@ static inline float *render_cursor(float *data, int rows, int columns) {
     int k = charnum / 10;
     int f = charnum % 10;
     for (int i = 0; i < rows; i++) {
-        for (int j = 0; j < columns; j++) {
-            int index = INDEX(k, f, i, j);
+		int index = INDEX(k, f, i, 0);
+        for (int j = 0; j < 4 * columns; j += 4) {
             float z = 1;
-            data[index] = z;
-            data[index + 1] = z;
-            data[index + 2] = z;
-            data[index + 3] = z;
+            data[index + j] = z;
+            data[index + j + 1] = z;
+            data[index + j + 2] = z;
+            data[index + j + 3] = z;
         }
     }
 }
@@ -73,18 +74,14 @@ float *render_ascii(FTFont font, FT_Library library) {
     float *data = calloc((rows * 10) * (columns * 10) * 4, sizeof(float));
     int charnum = strlen(ascii_printable);
 
-    FT_Error error;
-
     FT_Bitmap bitmap;
     FT_Bitmap_Init(&bitmap);
 
     for (int i = 0; i < charnum; i++) {
         FT_UInt glyph_index = FT_Get_Char_Index(face, ascii_printable[i]);
-        CHECK(FT_Load_Glyph(face, glyph_index, FT_LOAD_RENDER));
-        CHECK(FT_Render_Glyph(face->glyph,  FT_RENDER_MODE_NORMAL));
-
-        FT_Bitmap source = face->glyph->bitmap;
-        CHECK(FT_Bitmap_Convert(library, &source, &bitmap, 1));
+        FT_CHECK(FT_Load_Glyph(face, glyph_index, FT_LOAD_RENDER));
+        FT_CHECK(FT_Render_Glyph(face->glyph,  FT_RENDER_MODE_NORMAL));
+        FT_CHECK(FT_Bitmap_Convert(library, &face->glyph->bitmap, &bitmap, 1));
 
         int left = face->glyph->bitmap_left;
         int top = rows - descent - face->glyph->bitmap_top;
@@ -93,10 +90,10 @@ float *render_ascii(FTFont font, FT_Library library) {
             top = 0;
         }
 
-/*         if (bitmap.pitch < 0) { // hack */
-/*             printf("pitch less than 0: %d\n", bitmap.pitch); */
-/*             bitmap.pitch =  -bitmap.pitch; */
-/*         } */
+		/* if (bitmap.pitch < 0) { // is this needed? or actually is this correct?? */
+		/*     printf("pitch less than 0: %d\n", bitmap.pitch); */
+		/*     bitmap.pitch =  -bitmap.pitch; */
+		/* } */
 
         int k = i / 10;
         int f = i % 10;
@@ -127,32 +124,15 @@ x:
     return data;
 }
 
-/* if (error = FT_New_Face(library, "/home/ym/.local/share/fonts/curieMedium.otb", 0, &face)) { */
-/* if (error = FT_New_Face(library, "/usr/share/fonts/misc/scientifica-11.bdf", 0, &face)) { */
-/* if (error = FT_New_Face(library, "/usr/share/fonts/TTF/scientifica.ttf", 0, &face)) { */
-/* if (error = FT_New_Face(library, "/usr/share/fonts/misc/ter-u28b.otb", 0, &face)) { */
-/* if (error = FT_New_Face(library, "/usr/share/fonts/misc/DinaMedium10.pcf.gz", 0, &face)) { */
-/* if (error = FT_New_Face(library, "/usr/share/fonts/liberation/LiberationMono-Regular.ttf", 0, &face)) { */
-/* if (error = FT_New_Face(library, "/usr/share/fonts/TTF/Roboto-Regular.ttf", 0, &face)) { */
-/* if (error = FT_New_Face(library, "/usr/share/fonts/TTF/ComicMono.ttf", 1, &face)) { */
-/* if (error = FT_New_Face(library, "/home/ym/fun/refterm-linux/fonts/Cousine-Regular.ttf", 0, &face)) { */
-/* if (error = FT_New_Face(library, "/home/ym/fun/refterm-linux/fonts/comic shanns 2.ttf", 0, &face)) { */
-/* if (error = FT_New_Face(library, "/usr/share/fonts/noto/NotoSansMono-Regular.ttf", 0, &face)) { */
-/* if (error = FT_New_Face(library, "/usr/share/fonts/noto-cjk/NotoSansCJK-Medium.ttc", 0, &face)) { */
-/* if (error = FT_New_Face(library, "/usr/share/fonts/noto/NotoColorEmoji.ttf", 0, &face)) { */
-
 FTFont load_font(FT_Library library, char *fc, int width, int height) {
-    FT_Error error;
     FT_Face face;
-
-    CHECK(FT_New_Face(library, fc, 0, &face));
+    FT_CHECK(FT_New_Face(library, fc, 0, &face));
     if (FT_IS_SCALABLE(face)) {
-        CHECK (FT_Set_Pixel_Sizes(face, 0, height));
-        CHECK(FT_Load_Char(face, 'M', FT_RENDER_MODE_NORMAL));
-    }  else  {
+        FT_CHECK(FT_Set_Pixel_Sizes(face, 0, height));
+    } else  {
         FT_Select_Size(face, 0); // TODO
-        CHECK(FT_Load_Char(face, 'M', FT_RENDER_MODE_NORMAL));
     }
+    FT_CHECK(FT_Load_Char(face, 'M', FT_RENDER_MODE_NORMAL));
 
     FTFont font = {
         .face = face,
@@ -163,8 +143,14 @@ FTFont load_font(FT_Library library, char *fc, int width, int height) {
         .cellwidth  = face->glyph->advance.x >> 6,
 
         .underline = -face->underline_position >> 6,
-        .underline_thickness = (size_t) ((float) face->underline_thickness / 64 + 0.5)
+        .underline_thickness = face->underline_thickness >> 6
     };
+
+    if (!font.underline_thickness) {
+        font.underline = 1;
+        font.underline_thickness = 1;
+   }
+    /* font.underline = 5; */
 
     printf("height: %d, width: %d\n", font.cellheight, font.cellwidth);
     printf("ascent: %d, descent: %d\n", font.ascent, font.descent);
