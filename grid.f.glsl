@@ -25,7 +25,6 @@ vec3 UnpackColor(uint Packed) {
 }
 
 vec4 ComputeOutputColor(in uvec2 ScreenPos) {
-
     uvec2 CellIndex = uvec2(floor((ScreenPos - TopLeftMargin) / CellSize));
     uvec2 CellPos = (ScreenPos - TopLeftMargin) % CellSize;
 

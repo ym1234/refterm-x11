@@ -42,7 +42,6 @@ Rune utf8decodebyte(char c, size_t *i) {
 	return 0;
 }
 
-
 size_t utf8decode(const char *c, Rune *u, size_t clen) {
 	size_t i, j, len, type;
 	Rune udecoded;
@@ -76,64 +75,62 @@ int shape(FT_Face ft_face, hb_buffer_t *hb_buffer) {
 	hb_shape (hb_font, hb_buffer, NULL, 0);
 
 	/*   /1* Get glyph information and positions out of the buffer. *1/ */
-	/*   unsigned int len = hb_buffer_get_length (hb_buffer); */
-	/*   hb_glyph_info_t *info = hb_buffer_get_glyph_infos (hb_buffer, NULL); */
-	/*   hb_glyph_position_t *pos = hb_buffer_get_glyph_positions (hb_buffer, NULL); */
+	  unsigned int len = hb_buffer_get_length (hb_buffer);
+	  hb_glyph_info_t *info = hb_buffer_get_glyph_infos (hb_buffer, NULL);
+	  hb_glyph_position_t *pos = hb_buffer_get_glyph_positions (hb_buffer, NULL);
 
-	/*   /1* Print them out as is. *1/ */
-	/*   printf ("Raw buffer contents:\n"); */
-	/*   for (unsigned int i = 0; i < len; i++) */
-	/*   { */
-	/*     hb_codepoint_t gid   = info[i].codepoint; */
-	/*     unsigned int cluster = info[i].cluster; */
-	/*     double x_advance = pos[i].x_advance / 64.; */
-	/*     double y_advance = pos[i].y_advance / 64.; */
-	/*     double x_offset  = pos[i].x_offset / 64.; */
-	/*     double y_offset  = pos[i].y_offset / 64.; */
+	  /* Print them out as is. */
+	  printf ("Raw buffer contents:\n");
+	  for (unsigned int i = 0; i < len; i++)
+	  {
+	    hb_codepoint_t gid   = info[i].codepoint;
+	    unsigned int cluster = info[i].cluster;
+	    double x_advance = pos[i].x_advance / 64.;
+	    double y_advance = pos[i].y_advance / 64.;
+	    double x_offset  = pos[i].x_offset / 64.;
+	    double y_offset  = pos[i].y_offset / 64.;
 
-	/*     char glyphname[32]; */
-	/*     hb_font_get_glyph_name (hb_font, gid, glyphname, sizeof (glyphname)); */
+	    char glyphname[32];
+	    hb_font_get_glyph_name (hb_font, gid, glyphname, sizeof (glyphname));
 
-	/*     printf ("glyph='%s'	cluster=%d	advance=(%g,%g)	offset=(%g,%g)\n", */
-	/*             glyphname, cluster, x_advance, y_advance, x_offset, y_offset); */
-	/*   } */
+	    printf ("glyph='%s'	cluster=%d	advance=(%g,%g)	offset=(%g,%g)\n",
+	            glyphname, cluster, x_advance, y_advance, x_offset, y_offset);
+	  }
 
-	/*   printf ("Converted to absolute positions:\n"); */
-	/*   /1* And converted to absolute positions. *1/ */
-	/*   { */
-	/*     double current_x = 0; */
-	/*     double current_y = 0; */
-	/*     for (unsigned int i = 0; i < len; i++) */
-	/*     { */
-	/*       hb_codepoint_t gid   = info[i].codepoint; */
-	/*       unsigned int cluster = info[i].cluster; */
-	/*       double x_position = current_x + pos[i].x_offset / 64.; */
-	/*       double y_position = current_y + pos[i].y_offset / 64.; */
+	  printf ("Converted to absolute positions:\n");
+	  /* And converted to absolute positions. */
+	  {
+	    double current_x = 0;
+	    double current_y = 0;
+	    for (unsigned int i = 0; i < len; i++)
+	    {
+	      hb_codepoint_t gid   = info[i].codepoint;
+	      unsigned int cluster = info[i].cluster;
+	      double x_position = current_x + pos[i].x_offset / 64.;
+	      double y_position = current_y + pos[i].y_offset / 64.;
 
 
-	/*       char glyphname[32]; */
-	/*       hb_font_get_glyph_name (hb_font, gid, glyphname, sizeof (glyphname)); */
+	      char glyphname[32];
+	      hb_font_get_glyph_name (hb_font, gid, glyphname, sizeof (glyphname));
 
-	/*       printf ("glyph='%s'	cluster=%d	position=(%g,%g)\n", */
-	/* 	      glyphname, cluster, x_position, y_position); */
+	      printf ("glyph='%s'	cluster=%d	position=(%g,%g)\n",
+		      glyphname, cluster, x_position, y_position);
 
-	/*       current_x += pos[i].x_advance / 64.; */
-	/*       current_y += pos[i].y_advance / 64.; */
-	/*     } */
-	/*   } */
+	      current_x += pos[i].x_advance / 64.;
+	      current_y += pos[i].y_advance / 64.;
+	    }
+	  }
 
 	hb_font_destroy (hb_font);
 }
 
 
-int draw(Range *range, int r, unsigned int *utf32, double w, double h, hb_glyph_position_t *pos, int len) {
+int draw(Range *range, int r, unsigned int *utf32, int len2, double w, double h, hb_glyph_position_t *pos, int len) {
 	double width = 2 * MARGIN + w;
 	double height = 2 * MARGIN + h;
 
 	cairo_surface_t *cairo_surface;
-	cairo_surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32,
-			ceil(width),
-			ceil(height));
+	cairo_surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, ceil(width), ceil(height));
 	cairo_t *cr;
 	cr = cairo_create (cairo_surface);
 	cairo_set_source_rgba (cr, 1., 1., 1., 1.);
@@ -145,9 +142,8 @@ int draw(Range *range, int r, unsigned int *utf32, double w, double h, hb_glyph_
 	double current_x = 0;
 	double current_y = 0;
 	for (int i  = 0; i < r; ++i) {
-		FT_Face ft_face = range[i].ft_face;
 		cairo_font_face_t *cairo_face;
-		cairo_face = cairo_ft_font_face_create_for_ft_face (ft_face, 0);
+		cairo_face = cairo_ft_font_face_create_for_ft_face (range[i].ft_face, 0);
 		cairo_set_font_face (cr, cairo_face);
 		cairo_set_font_size (cr, FONT_SIZE);
 
@@ -159,7 +155,7 @@ int draw(Range *range, int r, unsigned int *utf32, double w, double h, hb_glyph_
 		}
 
 		cairo_glyph_t *cairo_glyphs = cairo_glyph_allocate (range[i].length);
-		for (int j = 0; j < range[i].length; j++)
+		_for (int j = 0; j < range[i].length; j++)
 		{
 			int idx = range[i].start + j;
 			cairo_glyphs[j].index = utf32[idx];
@@ -199,13 +195,18 @@ void find_font(FT_Library ft_library, FT_Face *f, unsigned int *utf32, int len) 
 	FcPatternGetString(m, FC_FILE, 0, &name);
 	printf("%s\n", name);
 
-	if ((FT_New_Face (ft_library, name, 0, f)))
+	if (FT_New_Face(ft_library, name, 0, f))
 		abort();
-	if ((FT_Set_Char_Size (*f, FONT_SIZE*64, FONT_SIZE*64, 0, 0)))
+	if (FT_Set_Char_Size(*f, FONT_SIZE*64, FONT_SIZE*64, 0, 0))
 		abort();
 }
 
 int main(int argc, char **argv) {
+	int i_ = i_;
+	if (argc < 2) {
+		printf("Please run me with more than 0 arguments");
+		return -1;
+	}
 	const char *text = argv[1];
 
 	if (!FcInit()) {
@@ -221,9 +222,7 @@ int main(int argc, char **argv) {
 		abort();
 
 	/* Create hb-buffer and populate. */
-	hb_buffer_t *hb_buffer;
-	hb_buffer = hb_buffer_create();
-
+	hb_buffer_t *hb_buffer = hb_buffer_create();
 	hb_unicode_funcs_t *def = hb_unicode_funcs_get_default();
 	hb_buffer_set_unicode_funcs(hb_buffer, def);
 
@@ -251,25 +250,15 @@ int main(int argc, char **argv) {
 	int lenb = 0;
 	double ax = 0;
 	double ay = 0;
-
+	int len2 = 0;
 
 	// TODO(ym): clean up
 
 	while (i < j) {
 		hb_script_t s = hb_unicode_script(def, utf32[i]);
-		if (last != s && __builtin_expect(i != 0, 1) && s != HB_SCRIPT_COMMON) {
-			/* if (last != s && __builtin_expect(i != 0, 1)) { */
+		if (last != s && __builtin_expect(i != 0, 1) && s != HB_SCRIPT_COMMON && s != HB_SCRIPT_UNKNOWN && s != HB_SCRIPT_INHERITED) {
 			FT_Face ft_face;
 			find_font(ft_library, &ft_face, utf32 + f, i - f);
-			/* printf("Y: %s\n", FcNameUnparse(m)); */
-
-			boundries[lenb].start = f ;
-			boundries[lenb].length = i - f;
-			boundries[lenb].ft_face = ft_face;
-			boundries[lenb].advance_x = ax;
-			boundries[lenb].advance_y = ay;
-			++lenb;
-
 			hb_buffer_clear_contents(hb_buffer);
 			hb_buffer_add_codepoints(hb_buffer, utf32, j, f, i - f);
 			hb_buffer_guess_segment_properties (hb_buffer); // TODO
@@ -277,31 +266,33 @@ int main(int argc, char **argv) {
 
 			hb_glyph_position_t *x = hb_buffer_get_glyph_positions (hb_buffer, NULL);
 			hb_glyph_info_t *info = hb_buffer_get_glyph_infos (hb_buffer, NULL);
-			assert(hb_buffer_get_length(hb_buffer) == (i - f));
-			memcpy(pos + f, x, (i  - f) * sizeof(*x));
-			for (int k = 0; k < (i - f); k++) {
-				glyphs[f + k] = info[k].codepoint;
-			}
-			for (int k = 0; k < (i - f); k++) {
+			int z = hb_buffer_get_length(hb_buffer);
+			memcpy(pos + len2, x, z * sizeof(*x));
+			for (int k = 0; k < z; k++) {
+				glyphs[len2 + k] = info[k].codepoint;
 				ax += x[k].x_advance / 64.;
 				ay += x[k].y_advance / 64.;
 			}
+
+			boundries[lenb].start = len2;
+			boundries[lenb].length = z;
+			boundries[lenb].ft_face = ft_face;
+			boundries[lenb].advance_x = ax;
+			boundries[lenb].advance_y = ay;
+			++lenb;
+
+			len2 += z;
 			f = i;
 		}
-		last = s;
+		if (s != HB_SCRIPT_COMMON && s != HB_SCRIPT_UNKNOWN && s != HB_SCRIPT_INHERITED) {
+			last = s;
+		}
 		++i;
 	}
 
 	if (i > f) {
 		FT_Face ft_face;
 		find_font(ft_library, &ft_face, utf32 + f, i - f);
-
-		boundries[lenb].start = f ;
-		boundries[lenb].length = i - f;
-		boundries[lenb].ft_face = ft_face;
-		boundries[lenb].advance_x = ax;
-		boundries[lenb].advance_y = ay;
-		++lenb;
 
 		hb_buffer_clear_contents(hb_buffer);
 		hb_buffer_add_codepoints(hb_buffer, utf32, j, f, i - f);
@@ -310,16 +301,22 @@ int main(int argc, char **argv) {
 
 		hb_glyph_position_t *x = hb_buffer_get_glyph_positions(hb_buffer, NULL);
 		hb_glyph_info_t *info = hb_buffer_get_glyph_infos(hb_buffer, NULL);
-		assert(hb_buffer_get_length(hb_buffer) == (i - f));
-		memcpy(pos + f, x, (i  - f) * sizeof(*x));
+		int z = hb_buffer_get_length(hb_buffer);
+		memcpy(pos + len2, x, z * sizeof(*x));
 
-		for (int k = 0; k < (i - f); k++) {
+		boundries[lenb].start = len2;
+		boundries[lenb].length = z;
+		boundries[lenb].ft_face = ft_face;
+		boundries[lenb].advance_x = ax;
+		boundries[lenb].advance_y = ay;
+		++lenb;
+
+		for (int k = 0; k < z; k++) {
 			glyphs[f + k] = info[k].codepoint;
-		}
-		for (int k = 0; k < (i - f); k++) {
 			ax += x[k].x_advance / 64.;
 			ay += x[k].y_advance / 64.;
 		}
+		len2 += z;
 		f = i;
 	}
 
@@ -327,7 +324,7 @@ int main(int argc, char **argv) {
 		printf("s: %d, l: %d\n", boundries[i].start , boundries[i].length);
 	}
 
-	for (int i = 0; i < j; ++i) {
+	for (int i = 0; i < len2; ++i) {
 		double x_advance = pos[i].x_advance / 64.;
 		double y_advance = pos[i].y_advance / 64.;
 		double x_offset  = pos[i].x_offset / 64.;
@@ -337,7 +334,8 @@ int main(int argc, char **argv) {
 
 	printf("ax, ay: %lf, %lf\n", ax, ay);
 
-	draw(boundries, lenb, glyphs, ax, FONT_SIZE, pos, j);
+	draw(boundries, lenb, glyphs, len2, ax, FONT_SIZE, pos, j);
 	hb_buffer_destroy (hb_buffer);
 	FT_Done_FreeType (ft_library);
+	return 0;
 }

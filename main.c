@@ -1,4 +1,12 @@
+#define _GNU_SOURCE
+/* #define TRACY_ENABLE */
+/* #define TRACY_DEBUGINFOD */
+
+#include "/home/ym/fun/tracy/public/tracy/TracyC.h"
+#include <sys/mman.h>
+#include <stdbool.h>
 #include <stdio.h>
+#include <termios.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -12,55 +20,56 @@
 #include <assert.h>
 #include <signal.h>
 #include <sys/types.h>
+#include <sys/select.h>
 #include <pwd.h>
+#include <X11/Xatom.h>
 #include <poll.h>
 
 void die(char *format, ...) {
-    va_list ap;
-    va_start(ap, format);
-    vprintf(format, ap);
-    va_end(ap);
-    exit(-1);
+	va_list ap;
+	va_start(ap, format);
+	vprintf(format, ap);
+	va_end(ap);
+	/* exit(-1); */
+}
+
+long long get_time(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC_RAW,&ts);
+	return ts.tv_sec * 1e9 + ts.tv_nsec;
 }
 
 #include "freetype.c"
-#include "tty.c"
 #include "ogl.c"
+#include "circular_buffer.c"
+#include "tty.c"
+#include "window.c"
 
 void clear_screen(unsigned int *screen, int width, int height) {
-    unsigned int vertex[4] = { 0, 0, 0x00C5C8C6, 0x1d1f21 };
-    /* unsigned int vertex[4] = { 0, 0, 0x00ffffff, 0x1d1f21 }; */
-    for (int i = 0; i < width * height * 4; i += 4) {
-        int index = i % 4;
-        screen[i + 0] = vertex[index];
-        screen[i + 1] = vertex[index + 1];
-        screen[i + 2] = vertex[index + 2];
-        screen[i + 3] = vertex[index + 3];
-    }
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA_INTEGER, GL_UNSIGNED_INT, screen);
+	unsigned int vertex[4] = { 0, 0, 0x00C5C8C6, 0x1d1f21 };
+	/* unsigned int vertex[4] = { 0, 0, 0x00ffffff, 0x1d1f21 }; */
+	for (int i = 0; i < width * height * 4; i += 4) {
+		int index = i % 4;
+		screen[i + 0] = vertex[index];
+		screen[i + 1] = vertex[index + 1];
+		screen[i + 2] = vertex[index + 2];
+		screen[i + 3] = vertex[index + 3];
+	}
+	glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA_INTEGER, GL_UNSIGNED_INT, screen);
 }
 
 unsigned int *update_screen(int width, int height) {
-    unsigned int *my_vertices = calloc(width * height * 4, sizeof(unsigned int));
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32UI, width, height, 0, GL_RGBA_INTEGER, GL_UNSIGNED_INT, my_vertices);
-    glUniform2ui(4, width, height); // Term Size
-    return my_vertices;
+	unsigned int *v = calloc(width * height * 4, sizeof(*v));
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32UI, width, height, 0, GL_RGBA_INTEGER, GL_UNSIGNED_INT, v);
+	glUniform2ui(4, width, height); // Term Size
+	return v;
 }
 
-char *render(int columns, int rows, unsigned int *screen, char* start, char *b) {
-	for (int i = rows - 1; i >= 0; --i) {
-		for (int j = columns - 1; j >= 0; --j) {
-			/* char c = *(b++); */
-			/* if () { */
-			/* 	--b; */
-			/* 	goto out; */
-			/* } else if (c == '\n') { */
-			char c = *(b--);
-			if (b == start) {
-				goto out;
-			}
-			if (c == '\n') {
-				j = -1;
+char *render(int columns, int rows, unsigned int *screen, unsigned int *b, int cur_x, int cur_y) {
+	for (int i = 0; i < rows; ++i) {
+		for (int j = 0; j < columns; ++j) {
+			unsigned int c = (char) *(b++);
+			if (!c) {
 				continue;
 			}
 			int z = 4 * ((i * columns) + j);
@@ -68,288 +77,407 @@ char *render(int columns, int rows, unsigned int *screen, char* start, char *b) 
 			screen[z + 1] = (c - 32) / 10;
 		}
 	}
-out:
-	return b;
+
+	screen[4 * (cur_y * columns + cur_x)] = ('~' - 31) % 10;
+	screen[4 * (cur_y * columns + cur_x) + 1] = ('~' - 31) / 10;
+
+	return "";
+	/* return b; */
 }
 
 
-void prep_tex(unsigned int tex, int texnum) {
-    glActiveTexture(GL_TEXTURE0 + texnum);
-    glBindTexture(GL_TEXTURE_2D, tex);
+void set_props(FTFont f) {
+	glUniform2ui(3, f.cellwidth, f.cellheight); // Cell Size
+	glUniform2ui(5, 4, 4); // TopLeftMargin
+	/* glUniform2ui(5, 0, 0); // TopLeftMargin */
 
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_LOD, 0);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LOD, 0);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glUniform1ui(6, 0xffffffff); // BlinkModulate
+	glUniform1ui(7, 0x1d1f21); // MarginColor
+	glClearColor(0x1d, 0x1f, 0x21, 0xff);
+	glClear(GL_COLOR_BUFFER_BIT);
+	glUniform2ui(8, 16/2 - 16/10, 16/2 + 16/10); // StrikeThrough
+	glUniform2ui(9, f.cellheight - f.descent + f.underline - (int)(f.underline_thickness  / 2.0 + 0.5),  f.cellheight - f.descent + f.underline - (int)(f.underline_thickness  / 2.0 + 0.5) + f.underline_thickness); // underline
+	/* glUniform2ui(9, 10, 2); */
 }
 
+void prep_tex(unsigned int tex, int texnum, int attridx) {
+	glUniform1i(attridx, texnum);
+	glActiveTexture(GL_TEXTURE0 + texnum);
+	glBindTexture(GL_TEXTURE_2D, tex);
+
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_LOD, 0);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LOD, 0);
+
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+}
+
+OGLContext prepare_glcontext() {
+	OGLContext ctx = {};
+	int shaders[2] = { compile_shader("grid.v.glsl", GL_VERTEX_SHADER), compile_shader("grid.f.glsl", GL_FRAGMENT_SHADER) };
+	ctx.prog  = create_program(2, shaders);
+	for (int i = 0; i < 2; ++i) {
+		glDeleteShader(shaders[i]);
+	}
+
+	float vertices[] ={ -1., 3, -1., -1., 3., -1 };
+	memcpy(ctx.vertices, vertices, sizeof(float) * 6);
+
+	glGenVertexArrays(1, &ctx.VAO);
+	glBindVertexArray(ctx.VAO);
+	glGenBuffers(1, &ctx.VBO);
+
+	glBindBuffer(GL_ARRAY_BUFFER, ctx.VBO);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void*)0);
+	glEnableVertexAttribArray(0);
+
+	glUseProgram(ctx.prog);
+	glBindVertexArray(ctx.VAO);
+
+	glGenTextures(2, ctx.tex);
+	prep_tex(ctx.tex[0], 0, 2);
+	prep_tex(ctx.tex[1], 1, 1);
+
+	glFinish();
+	return ctx;
+}
+
+void clean_glcontext(OGLContext ctx) {
+	glDeleteVertexArrays(1, &ctx.VAO);
+	glDeleteBuffers(1, &ctx.VBO);
+	glDeleteProgram(ctx.prog);
+}
+
+void print_array(char **a, int len) {
+	for (int i = 0; i < len; ++i) {
+		printf("%s, ", a[i]);
+	}
+	printf("\n");
+}
 int main(int argc, char *argv[]) {
-    setbuf(stdout, NULL);
-    setlocale(LC_ALL, "C.UTF-8");
-	assert(argc > 1);
+	setbuf(stdout, NULL);
+    for (int opt; (opt = getopt(argc, argv, "")) != -1; ) { switch(opt) { } } // TODO(ym):
 
+	char **args = NULL;
+	if (optind < argc) {
+		args = &argv[optind];
+		printf("Non-option args: ");
+		print_array(argv + optind, argc - optind);
+	}
 
-    Display *d = XOpenDisplay(NULL);
-    if (d == NULL) {
-        fprintf(stderr, "Cannot open display\n");
-        exit(-1);
-    }
-    Window win = create_window(d);
+	if (!args) {
+		args = &(char *){"/bin/bash"}; // NOTE: C99
+	}
 
-    FT_Library library;
-    if(FT_Init_FreeType(&library)) {
-        die("Couldn't load freetype");
-    }
-    FTFont font = load_font(library, "/home/ym/.local/share/fonts/curieMedium.otb", 0, 12);
-    /* FTFont font = load_font(library, "/usr/share/fonts/misc/ter-u28b.otb", 0, 16); */
-    /* FTFont font = load_font(library, "/usr/share/fonts/liberation/LiberationMono-Regular.ttf", 0, 16); */
-    /* FTFont font = load_font(library, "/usr/share/fonts/TTF/Roboto-Regular.ttf", 0, 16); */
-    /* FTFont font = load_font(library, "/usr/share/fonts/noto/NotoSansMono-Regular.ttf", 0, 16); */
+	Display *d = XOpenDisplay(NULL);
 
-    int shaders[2] = { compile_shader("grid.v.glsl", GL_VERTEX_SHADER), compile_shader("grid.f.glsl", GL_FRAGMENT_SHADER) };
-    unsigned int prog = create_program(2, shaders);
-    glDeleteShader(shaders[0]);
-    glDeleteShader(shaders[1]);
+#if 0
+	int pagesize = getpagesize();
+#else
+	int pagesize = sysconf(_SC_PAGESIZE);
+#endif
 
-    /* float vertices[] = { -1., 1., -1., -1., 1., 1., 1., -1.}; */
-    /* float vertices[] = { -1., -1., 3., -1., -1., 3.}; */
-    float vertices[] = { -1., 3, -1., -1., 3., -1 };
+#define IsPowerOfTwo(x) (((x) & (x - 1)) == 0)
+	assert(IsPowerOfTwo(pagesize));
 
-    unsigned int VBO, VAO;
-    glGenVertexArrays(1, &VAO);
-    glBindVertexArray(VAO);
-    glGenBuffers(1, &VBO);
+	Terminal t = create_terminal(d, pagesize * 20, args);
 
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+	map_window(&t.xw);
+	if (!gladLoadGL()) die("Couldn't load opengl\n"); // TODO(ym): Check if glad is already loaded
+    glEnable(GL_DEBUG_OUTPUT);
+    glDebugMessageCallback(MessageCallback, 0);
 
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void*)0);
-    glEnableVertexAttribArray(0);
+	t.gh = 12;
+	t.gw = 0;
 
-    glUseProgram(prog);
-    glBindVertexArray(VAO);
+	FT_Library ftlib;
+	if(FT_Init_FreeType(&ftlib))
+		die("Couldn't load freetype");
 
-    glUniform2ui(3, font.cellwidth, font.cellheight); // Cell Size
-    glUniform2ui(5, 4, 4); // TopLeftMargin
-    /* glUniform2ui(5, 0, 0); // TopLeftMargin */
+	FTFont f = load_font(ftlib, "/home/ym/.local/share/fonts/curieMedium.otb", t.gw, t.gh);
+	t.gw = f.cellwidth;
 
-    glUniform1ui(6, 0xffffffff); // BlinkModulate
-    glUniform1ui(7, 0x1d1f21); // MarginColor
-    glClearColor(0x1d, 0x1f, 0x21, 0xff);
-    glClear(GL_COLOR_BUFFER_BIT);
-    glUniform2ui(8, 16/2 - 16/10, 16/2 + 16/10); // StrikeThrough
-    glUniform2ui(9, font.cellheight - font.descent + font.underline - (int)(font.underline_thickness  / 2.0 + 0.5),  font.cellheight - font.descent + font.underline - (int)(font.underline_thickness  / 2.0 + 0.5) + font.underline_thickness); // underline
-    /* glUniform2ui(9, 10, 2); */
+	set_terminalsz(&t);
 
+	OGLContext ctx = prepare_glcontext();
+	set_props(f);
 
-    unsigned int tex[2];
-    glGenTextures(2, tex);
+	float *data = render_ascii(f, ftlib);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, f.cellwidth * 10, f.cellheight * 10, 0, GL_RGBA, GL_FLOAT, data);
 
-    glUniform1i(1, 0);
-    prep_tex(tex[0], 0);
+	glTexImage2D(GL_TEXTURE_2D, 1, GL_RGBA, 0, 0, 0, GL_RGBA, GL_FLOAT, (float *) NULL);
 
-    float *data = render_ascii(font, library);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, font.cellwidth * 10, font.cellheight * 10, 0, GL_RGBA, GL_FLOAT, data);
+	char x[0x1000] = {};
+	int xfd = XConnectionNumber(d);
+	XEvent xev;
+	while (1) {
+		TracyCFrameMarkStart("Frame");
 
-    glUniform1i(2, 1);
-    prep_tex(tex[1], 1);
+		fd_set y;
+		FD_ZERO(&y);
+		FD_SET(t.cmdfd, &y);
+		FD_SET(xfd, &y);
 
-    glFinish();
+		float timeout = 16; // ms
+		if (XPending(d))
+			timeout = 0;  // existing events might not set xfd
 
+		struct timespec ts = { .tv_sec = timeout / 1E3, .tv_nsec = 1E6 * (timeout - 1E3 * ts.tv_sec) };
 
-    XWindowAttributes gwa;
-    XGetWindowAttributes(d, win, &gwa);
+		// Defined in TracyC.h
+#ifndef MAX
+#define MAX(a, b) ((a) < (b) ? (b) : (a))
+#endif
 
-    int columns = (gwa.width - 4) / font.cellwidth;
-    int rows = (gwa.height - 4) / font.cellheight;
-    unsigned int *my_vertices = update_screen(columns, rows);
-
-    char framerate_c[1000] = {};
-    XEvent xev;
-
-    struct timeval time;
-    double frametime = 0;
-    int framerate = 1;
-
-    int width = gwa.width, height = gwa.height;
-
-	int cmdfd = ttynew("/bin/sh", argv+1);
-
-	fd_set rfd;
-	FD_ZERO(&rfd);
-	FD_SET(cmdfd, &rfd);
-
-	int flags = fcntl(cmdfd, F_GETFL, 0);
-	fcntl(cmdfd, F_SETFL, flags | O_NONBLOCK);
-
-#define BUFFER_SIZE 0xFFFFFFFF
-    char *screen = calloc(BUFFER_SIZE, sizeof(char));
-	screen[0] = '~' + 1;
-	int pos = 0;
-	int scroll = 0;
-    size_t num_frames = 1;
-    double frametime_total = 0;
-    size_t sum_fps = 0;
-
-
-    while(1) {
-        gettimeofday(&time, NULL);
-        long start_time = 1000000 * time.tv_sec + time.tv_usec;
-
-        int pending = XPending(d);
-        while (pending) {
-            XNextEvent(d, &xev);
-			if (xev.type == ButtonPress){
-				switch (xev.xbutton.button){
-					case Button4:
-						if(scroll) {
-							--scroll;
-						}
-						while (scroll && screen[--scroll] != '\n');
-						if (scroll) {
-							++scroll;
-						}
-						/* printf("up"); */
-						break;
-					case Button5:
-						while (scroll < pos && screen[scroll++] != '\n') {
-						}
-						/* printf("down"); */
-						break;
-					default:
-				}
+		{
+			TracyCZoneN(ctx, "PSelect", 1);
+			if (pselect(MAX(xfd, t.cmdfd)+1, &y, NULL, NULL, &ts, NULL) < 0) {
+				if (errno == EINTR)
+					continue;
+				die("select failed: %s\n", strerror(errno));
 			}
-            if (xev.type == ConfigureNotify) {
-                XGetWindowAttributes(d, win, &gwa);
-                if (gwa.width == width && gwa.height == height) {
-                    pending--;
-                    continue;
-                }
-
-                columns = (gwa.width - 4) / font.cellwidth;
-                rows = (gwa.height - 4) / font.cellheight;
-                printf("columns: %d, rows: %d\n", columns, rows);
-                free(my_vertices);
-
-                my_vertices = update_screen(columns, rows);
-                width = gwa.width, height = gwa.height;
-
-                glScissor(0, 0, gwa.width, gwa.height);
-                glEnable(GL_SCISSOR_TEST);
-                glViewport(0, 0, gwa.width, gwa.height);
-            } else if (xev.type = KeyPress) {
-                char b[36] = {};
-                KeySym keysym;
-                XLookupString(&xev.xkey, b, sizeof(b), &keysym, NULL);
-                /* printf("%x\n", keysym); */
-                if (b[0] >= 32 && b[0] <= 32 + 95 && strlen(b) == 1) {
-                    screen[pos++] = b[0];
-                } else if (keysym == 0xff0du) {
-                    screen[pos++] = '\n';
-                } else if (keysym == 0xff08) {
-                    if (pos > 0) {
-                        --pos;
-                    }
-                }
-                screen[pos] = '~' + 1;
-                screen[pos + 1] = '\0';
-            }
-            pending--;
-        }
-
-		// TODO(ym):
-		/* struct timeval tv = {}; */
-		/* tv.tv_sec = 10; */
-		/* tv.tv_usec = 0; */
-		/* int r = select(cmdfd+1, &rfd, NULL, NULL, &tv); */
-		/* printf("%d\n", r); */
-		/* if (r < 0) { */
-		/* 	if (errno == EINTR) */
-		/* 		continue; */
-		/* 	die("select failed: %s\n", strerror(errno)); */
-		/* } else if (r > 0) { */
-		/* 	int k = read(cmdfd, screen + pos, r); */
-		/* 	printf("Read %d, %d, %s, %s\n", r, k, strerror(errno), screen + pos); */
-		/* 	if (k > 0) { */
-		/* 		screen[pos + k] = '~' + 1; */
-		/* 		pos += k; */
-		/* 	} */
-		/* } */
-		/* printf("%d\n", r); */
-		/* printf("Here\n"); */
-
-		// TODO(ym):
-		/* int n = 0; */
-		/* if ((n = poll(&cmdfd, 1, -1)) >= 0) { */
-		/* 	/1* if (!((screen + pos + n) >= BUFFER_SIZE)) { *1/ */
-		/* 	printf("%s\n", strerror(errno)); */
-		/* 	errno = 0; */
-		/* 		int k = read(cmdfd, screen + pos, n); */
-		/* 		printf("Read %d, %d, %s, %s\n", n, k, strerror(errno), screen + pos); */
-		/* 		if (k > 0) { */
-		/* 			screen[pos + k] = '~' + 1; */
-		/* 			pos += k; */
-		/* 		} */
-		/* 	/1* } *1/ */
-		/* } */
-		/* errno = 0; */
-
-
-		errno = 0;
-		if (pos < BUFFER_SIZE) {
-			int k = read(cmdfd, screen + pos, BUFFER_SIZE - pos);
-			if (k > 0) {
-				screen[pos + k] = '\n';
-				screen[pos + k + 1] = '~' + 1;
-				pos += k + 1;
-				/* printf("Read %d, %d, %s, %s\n", 0, k, strerror(errno), screen + pos - k); */
-				/* fflush(stdout); */
-			}
+			TracyCZoneEnd(ctx);
 		}
 
-        clear_screen(my_vertices, columns, rows);
-        char *c = render(columns, rows, my_vertices, screen, screen - scroll + pos);
+		if (XPending(d)) {
+			TracyCZoneN(ctx, "X11 code", 1);
+			XNextEvent(d, &xev);
+			if (handler[xev.type]) {
+				handler[xev.type](&t, &xev);
+			}
+			TracyCZoneEnd(ctx);
+		}
 
-        snprintf(framerate_c, 1000, "FPS: %5d, mSPF: %f, aFPS: %f, amSPF %f, columns: %d, rows: %d", framerate, frametime * 100, (double) sum_fps / num_frames, (double) frametime_total / num_frames, columns, rows);
-        size_t framelen = strlen(framerate_c);
+		if (FD_ISSET(t.cmdfd, &y)) {
+			TracyCZoneN(ctx, "Reading loop", 2);
+			int r = read(t.cmdfd, x, 0x1000);
+			TracyCZoneEnd(ctx);
+		}
 
-        for (int i = 0; i < framelen; i++) {
-            int idx = 4 * (columns * rows - framelen + i);
-            char c = framerate_c[i] - 32;
-            my_vertices[idx] = c % 10;
-            my_vertices[idx + 1] = c / 10;
+		{
+			TracyCZoneN(ctx, "drawing loop", 3);
+			/* clear_screen(v, sz.x, sz.y); */
+			/* render(sz.x, sz.y, v, ms, c); */
+
+			/* glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, sz.x, sz.y, GL_RGBA_INTEGER, GL_UNSIGNED_INT, v); */
+
+			{
+				glDrawArrays(GL_TRIANGLES, 0, 3);
+				glFinish();
+				glXSwapBuffers(d, t.xw.win);
+				/* XFlush(d); */
+			}
+			TracyCZoneEnd(ctx);
+		}
+
+		TracyCFrameMarkEnd("Frame");
+
+	}
+
+	clean_glcontext(ctx);
+	XCloseDisplay(d);
+}
+
+#if 0
+int main(int argc, char *argv[]) {
+
+	char *cmd = NULL;
+
+    for (int opt; (opt = getopt(argc, argv, "")) != -1; ) {
+        switch(opt) {
+			/* case 'c': */
+			/* 	cmd = optarg; */
+			/* 	break; */
         }
-
-        /* glTexSubImage2D(GL_TEXTURE_2D, 0, columns - framelen, rows - 1, framelen, 1, GL_RGBA_INTEGER, GL_UNSIGNED_INT, my_vertices + (columns * rows * 4 - 4 * framelen)); */
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, columns, rows, GL_RGBA_INTEGER, GL_UNSIGNED_INT, my_vertices);
-
-        {
-            glDrawArrays(GL_TRIANGLES, 0, 3);
-            glXSwapBuffers(d, win);
-            /* glFinish(); */
-        }
-
-        gettimeofday(&time, NULL);
-        long end_time = 1000000 * time.tv_sec + time.tv_usec;
-
-        frametime = ((double)(end_time - start_time) / 1000000);
-        framerate = (int) (1 / frametime);
-
-        sum_fps += framerate;
-        frametime_total += frametime;
-        ++num_frames;
-		/* usleep(1000000); */
     }
 
-    glDeleteVertexArrays(1, &VAO);
-    glDeleteBuffers(1, &VBO);
-    glDeleteProgram(prog);
+	char **args;
+	if (optind < argc)
+	{
+		args = &argv[optind];
+		printf("Non-option args: ");
+		while (optind < argc)
+			printf("%s ", argv[optind++]);
+		printf("\n");
+	}
 
-    XCloseDisplay(d);
+	/* setbuf(stdout, NULL); */
+	/* setlocale(LC_ALL, "C.UTF-8"); */
 
-    return 0;
+	create_cbuf(4096);
+
+	printf("print: %d\n", print);
+	/* printf("cmd: %s\n", cmd); */
+
+	int cmdfd = ttynew("/bin/bash", args);
+
+	/* int flags = fcntl(cmdfd, F_GETFL, 0); */
+	/* fcntl(cmdfd, F_SETFL, flags | O_NONBLOCK); */
+	Display *d = XOpenDisplay(NULL);
+	if (d == NULL) {
+		fprintf(stderr, "Cannot open display\n");
+		exit(-1);
+	}
+
+	Vec wz = {};
+	{
+		XEvent xev;
+		do {
+			XNextEvent(d, &xev);
+			if (XFilterEvent(&xev, None)) {
+				continue;
+			} else if (xev.type == ConfigureNotify) {
+				wz.x = xev.xconfigure.width;
+				wz.y = xev.xconfigure.height;
+				printf("%d, %d\n", wz.x, wz.y);
+			}
+		} while (xev.type != MapNotify);
+	}
+
+	FT_Library library;
+	if(FT_Init_FreeType(&library)) {
+		die("Couldn't load freetype");
+	}
+	FTFont f = load_font(library, "/home/ym/.local/share/fonts/curieMedium.otb", 0, 12);
+	/* FTFont f = load_font(library, "/usr/share/fonts/misc/ter-u28b.otb", 0, 16); */
+	/* FTFont font = load_font(library, "/usr/share/fonts/liberation/LiberationMono-Regular.ttf", 0, 16); */
+	/* FTFont font = load_font(library, "/usr/share/fonts/TTF/Roboto-Regular.ttf", 0, 16); */
+	/* FTFont f = load_font(library, "/usr/share/fonts/noto/NotoSansMono-Regular.ttf", 0, 16); */
+
+	Vec sz = screensize(wz, f);
+	unsigned int *v = update_screen(sz.x, sz.y);
+
+#define SIZE 0x1000
+	char x[SIZE] = {0};
+
+	unsigned int *ms = calloc(sz.x * sz.y, sizeof(*ms));
+	Vec c = {0};
+
+	XEvent xev;
+	int xfd = XConnectionNumber(d);
+
+	fd_set y;
+	while(1) {
+		TracyCFrameMarkStart("Frame");
+
+		FD_ZERO(&y);
+		FD_SET(cmdfd, &y);
+		FD_SET(xfd, &y);
+
+
+		float timeout = 16; //ms
+		if (XPending(d))
+			timeout = 0;  /* existing events might not set xfd */
+
+		struct timespec ts = { .tv_sec = timeout / 1E3, .tv_nsec = 1E6 * (timeout - 1E3 * ts.tv_sec) };
+
+#define MAX(a, b) ((a) < (b) ? (b) : (a))
+
+		{
+			TracyCZoneN(ctx, "PSelect", 1);
+			if (pselect(MAX(xfd, cmdfd)+1, &y, NULL, NULL, &ts, NULL) < 0) {
+				if (errno == EINTR)
+					continue;
+				die("select failed: %s\n", strerror(errno));
+			}
+			TracyCZoneEnd(ctx);
+		}
+
+		if (XPending(d)) {
+			TracyCZoneN(ctx, "X11 code", 1);
+			while (XPending(d)) {
+				XNextEvent(d, &xev);
+				switch (xev.type) {
+					case ButtonPress: {
+					} break;
+					case ConfigureNotify: {
+						Vec wz_t = {.x = xev.xconfigure.width, .y = xev.xconfigure.height };
+						if (wz.x == wz_t.x && wz.y == wz_t.y) {
+							continue;
+						}
+
+						wz = wz_t;
+						sz = screensize(wz, f);
+						free(v);
+						free(ms);
+
+						ms = calloc(sz.x * sz.y, sizeof(*ms));
+						v = update_screen(sz.x, sz.y);
+
+						glScissor(0, 0, wz.x, wz.y);
+						glEnable(GL_SCISSOR_TEST);
+						glViewport(0, 0, wz.x, wz.y);
+					} break;
+					case KeyPress: {
+						char b[36] = {};
+						KeySym keysym;
+						int l = XLookupString(&xev.xkey, b, sizeof(b), &keysym, NULL);
+						printf("B: ");
+						for (int i = 0; i < l; i++) {
+							printf("%x, ", b[i]);
+						}
+						printf("\n");
+						if (l == 1 && b[0] < 0x80) {
+							if (b[0] == '\r') {
+								write(cmdfd, "\r\n", 2);
+							}
+							write(cmdfd, b, l);
+						} else if (keysym == 0xff52) {
+							char *s = "\033[A\0";
+							write(cmdfd, s, strlen(s));
+						} else {
+							printf("Unknown keycode received: %x\n", keysym);
+						}
+					} break;
+
+					case ClientMessage: {
+						printf("Received client message\n");
+						if ((Atom)xev.xclient.data.l[0] == atom) {
+							return 0;
+							/* exit(0); */
+						}
+					} break;
+				}
+			}
+			TracyCZoneEnd(ctx);
+		}
+
+		if (FD_ISSET(cmdfd, &y)) {
+			TracyCZoneN(ctx, "Reading loop", 2);
+			int r = read(cmdfd, x, SIZE);
+			TracyCZoneEnd(ctx);
+		}
+
+		{
+			TracyCZoneN(ctx, "drawing loop", 3);
+			clear_screen(v, sz.x, sz.y);
+			render(sz.x, sz.y, v, ms, c);
+
+			glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, sz.x, sz.y, GL_RGBA_INTEGER, GL_UNSIGNED_INT, v);
+
+			{
+				glDrawArrays(GL_TRIANGLES, 0, 3);
+				glFinish();
+				glXSwapBuffers(d, win);
+				XFlush(d);
+			}
+			TracyCZoneEnd(ctx);
+		}
+
+		TracyCFrameMarkEnd("Frame");
+	}
+
+	glDeleteVertexArrays(1, &VAO);
+	glDeleteBuffers(1, &VBO);
+	glDeleteProgram(prog);
+
+	XCloseDisplay(d);
+
+	return 0;
 }
+#endif
