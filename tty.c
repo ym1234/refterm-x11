@@ -20,10 +20,47 @@ sigchld(int a)
 		die("child exited with status %d\n", WEXITSTATUS(stat));
 	else if (WIFSIGNALED(stat))
 		die("child terminated due to signal %d\n", WTERMSIG(stat));
-	_exit(0);
+	/* _exit(0); */
 }
 
 #define DEFAULT(a, b)		(a) = (a) ? (a) : (b)
+
+/* void exec_with_sh(char **args) { */
+/* 	char *sh; */
+/* 	const struct passwd *pw; */
+
+/* 	errno = 0; */
+/* 	if ((pw = getpwuid(getuid())) == NULL) { */
+/* 		if (errno) */
+/* 			die("getpwuid: %s\n", strerror(errno)); */
+/* 		else */
+/* 			die("who are you?\n"); */
+/* 	} */
+
+/* 	if ((sh = getenv("SHELL")) == NULL) */
+/* 		sh = (pw->pw_shell[0]) ? pw->pw_shell : cmd; */
+
+/* 	setenv("LOGNAME", pw->pw_name, 1); */
+/* 	setenv("USER", pw->pw_name, 1); */
+/* 	setenv("SHELL", sh, 1); */
+/* 	setenv("HOME", pw->pw_dir, 1); */
+/* 	setenv("TERM", "HELLO", 1); */
+
+/* 	signal(SIGCHLD, SIG_DFL); */
+/* 	signal(SIGHUP, SIG_DFL); */
+/* 	signal(SIGINT, SIG_DFL); */
+/* 	signal(SIGQUIT, SIG_DFL); */
+/* 	signal(SIGTERM, SIG_DFL); */
+/* 	signal(SIGALRM, SIG_DFL); */
+
+/* 	printf("prog: %s, args:", sh); */
+/* 	for (int i = 0; args[i] != NULL; i++) { */
+/* 		printf("%s\n", args[i]); */
+/* 	} */
+
+/* 	execvp(sh, args); */
+/* 	_exit(1); */
+/* } */
 
 void execsh(char *cmd, char **args) {
 	setbuf(stdout, NULL);
@@ -66,10 +103,10 @@ void execsh(char *cmd, char **args) {
 	signal(SIGQUIT, SIG_DFL);
 	signal(SIGTERM, SIG_DFL);
 	signal(SIGALRM, SIG_DFL);
-	printf("prog: %s, args:", prog);
-	for (int i = 0; args[i] != NULL; i++) {
-		printf("%s\n", args[i]);
-	}
+	/* printf("prog: %s, args:", prog); */
+	/* for (int i = 0; args[i] != NULL; i++) { */
+	/* 	printf("%s\n", args[i]); */
+	/* } */
 	execvp(prog, args);
 	_exit(1);
 }
@@ -93,6 +130,7 @@ void enableRawMode() {
 	if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1) die("tcsetattr");
 }
 
+// Always runs the command with the user's shell
 int ttynew(char *cmd, char **args) {
 	int m, s;
 

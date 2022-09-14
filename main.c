@@ -1,6 +1,6 @@
 #define _GNU_SOURCE
-/* #define TRACY_ENABLE */
-/* #define TRACY_DEBUGINFOD */
+#define TRACY_ENABLE
+#define TRACY_DEBUGINFOD
 
 #include "/home/ym/fun/tracy/public/tracy/TracyC.h"
 #include <sys/mman.h>
@@ -25,6 +25,15 @@
 #include <X11/Xatom.h>
 #include <poll.h>
 
+// Defined in TracyC.h
+#ifndef MAX
+#define MAX(a, b) ((a) < (b) ? (b) : (a))
+#endif
+#ifndef MIN
+
+#define MAX(a, b) ((a) > (b) ? (b) : (a))
+#endif
+
 void die(char *format, ...) {
 	va_list ap;
 	va_start(ap, format);
@@ -39,65 +48,158 @@ long long get_time(void) {
 	return ts.tv_sec * 1e9 + ts.tv_nsec;
 }
 
+long getps(void) {
+#if 0
+	return getpagesize();
+#else
+	return sysconf(_SC_PAGESIZE);
+#endif
+}
+
+#include "refterm_example_source_buffer.h"
+#include "refterm_example_source_buffer.c"
 #include "freetype.c"
 #include "ogl.c"
-#include "circular_buffer.c"
 #include "tty.c"
 #include "window.c"
 
+#define printf(...)
 void clear_screen(unsigned int *screen, int width, int height) {
+	TracyCZoneN(ctx, "clearing screen", true);
+	/* int s = ARRSIZE(ascii_printable); */
 	unsigned int vertex[4] = { 0, 0, 0x00C5C8C6, 0x1d1f21 };
-	/* unsigned int vertex[4] = { 0, 0, 0x00ffffff, 0x1d1f21 }; */
+	/* unsigned int vertex[4] = { 0, 0, 0, 0 }; */
 	for (int i = 0; i < width * height * 4; i += 4) {
 		int index = i % 4;
+		/* unsigned int k = 10 * (rand() / ((float) RAND_MAX)); */
+		/* unsigned int v = 10 * (rand() / ((float) RAND_MAX)); */
 		screen[i + 0] = vertex[index];
 		screen[i + 1] = vertex[index + 1];
 		screen[i + 2] = vertex[index + 2];
 		screen[i + 3] = vertex[index + 3];
 	}
-	glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA_INTEGER, GL_UNSIGNED_INT, screen);
+	TracyCZoneEnd(ctx);
+	/* glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA_INTEGER, GL_UNSIGNED_INT, screen); */
 }
 
-unsigned int *update_screen(int width, int height) {
-	unsigned int *v = calloc(width * height * 4, sizeof(*v));
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32UI, width, height, 0, GL_RGBA_INTEGER, GL_UNSIGNED_INT, v);
-	glUniform2ui(4, width, height); // Term Size
-	return v;
+size_t CurrentLine(Terminal *t) {
+	return t->CurrentLine % t->th;
 }
 
-char *render(int columns, int rows, unsigned int *screen, unsigned int *b, int cur_x, int cur_y) {
-	for (int i = 0; i < rows; ++i) {
-		for (int j = 0; j < columns; ++j) {
-			unsigned int c = (char) *(b++);
-			if (!c) {
-				continue;
+void AdvanceRow(Terminal *t) {
+	t->CurrentLineWidth = 0;
+	t->CurrentLine++;
+
+	if (t->CurrentLine - t->AnchorLine >= t->th) {
+		size_t x = (t->CurrentLine - t->AnchorLine) - t->th + 1;
+		/* printf("x: %d, currentline - anchorline: %d\n", x, t->CurrentLine - t->AnchorLine); */
+		for (int i = 0; i < x; i++) {
+			t->lines[(t->AnchorLine + i) % t->th] = 0;
+			t->offsets[(t->AnchorLine + i) % t->th] = 0;
+		}
+		t->AnchorLine += x;
+		printf("Current Anchor: %d\n", t->AnchorLine);
+	}
+	t->lines[CurrentLine(t)] = t->SegmentCount;
+	t->offsets[CurrentLine(t)] = 0;
+}
+
+void AdvanceColumn(Terminal *t) {
+	t->CurrentLineWidth++;
+	if (t->CurrentLineWidth >= t->tw) {
+		AdvanceRow(t);
+		t->lines[CurrentLine(t)] = t->SegmentCount - 1;
+		t->offsets[CurrentLine(t)] = t->sg[t->SegmentCount - 1].buf.Count;
+	}
+}
+
+void SetCell(Terminal *t, int x, int y, char ch) {
+	if (ch < 32 || ch > 126) {
+		ch = '?';
+	}
+	int idx = 4 * (y * t->tw + x);
+	t->screen[idx] = (ch - 32) % 10;
+	t->screen[idx + 1] = (ch - 32) / 10;
+}
+
+void ProcessInput(Terminal *t, TCursor *cursor, source_buffer_range ob) {
+
+	TracyCZoneN(ctx, "processing input", true);
+	assert(t->sg);
+
+	source_buffer_range buf = ob;
+	int rows_moved = 0;
+	while (buf.Count) {
+		size_t nsg = t->SegmentCount++;
+
+		t->sg[nsg].buf = buf;
+		t->sg[nsg].buf.Count = 0;
+
+		for (int i = 0; i < buf.Count; ++i) {
+			if (buf.Data[i] == '\r' || buf.Data[i] == '\n') { //  || !(buf.Count - i - 1)) {
+				if (buf.Data[i] == '\r' && i + 1 < buf.Count && buf.Data[i+1] == '\n') {
+					buf = ConsumeCount(buf, i + 2);
+				} else if (buf.Data[i] == '\n') {
+					buf = ConsumeCount(buf, i + 1);
+				} else if (buf.Data[i] == '\r') {
+					buf.Count = 0;
+					break;
+				}
+				t->sg[nsg].line_end = true;
+				AdvanceRow(t);
+				break;
 			}
-			int z = 4 * ((i * columns) + j);
-			screen[z] = (c - 32) % 10;
-			screen[z + 1] = (c - 32) / 10;
+			t->sg[nsg].buf.Count++;
+			AdvanceColumn(t);
+			if (i == (buf.Count - 1)) {
+				buf = ConsumeCount(buf, buf.Count);
+			}
 		}
 	}
-
-	screen[4 * (cur_y * columns + cur_x)] = ('~' - 31) % 10;
-	screen[4 * (cur_y * columns + cur_x) + 1] = ('~' - 31) / 10;
-
-	return "";
-	/* return b; */
+	TracyCZoneEnd(ctx);
 }
-
 
 void set_props(FTFont f) {
 	glUniform2ui(3, f.cellwidth, f.cellheight); // Cell Size
 	glUniform2ui(5, 4, 4); // TopLeftMargin
-	/* glUniform2ui(5, 0, 0); // TopLeftMargin */
 
 	glUniform1ui(6, 0xffffffff); // BlinkModulate
-	glUniform1ui(7, 0x1d1f21); // MarginColor
-	glClearColor(0x1d, 0x1f, 0x21, 0xff);
-	glClear(GL_COLOR_BUFFER_BIT);
+	glUniform1ui(7, 0x280418); // 0x1d1f21); // MarginColor
+
 	glUniform2ui(8, 16/2 - 16/10, 16/2 + 16/10); // StrikeThrough
 	glUniform2ui(9, f.cellheight - f.descent + f.underline - (int)(f.underline_thickness  / 2.0 + 0.5),  f.cellheight - f.descent + f.underline - (int)(f.underline_thickness  / 2.0 + 0.5) + f.underline_thickness); // underline
 	/* glUniform2ui(9, 10, 2); */
+}
+
+void Render(Terminal *t) {
+	TracyCZoneN(ctx, "rendering input", true);
+	printf("Current Anchor in render: %d\n", t->AnchorLine);
+	int CursorY = 0;
+
+	for (int i = 0; i < t->CurrentLine - t->AnchorLine + 1; ++i) {
+		size_t line = t->lines[(t->AnchorLine + i) % t->th];
+		size_t offset = t->offsets[(t->AnchorLine + i) % t->th];
+		printf("loop n#%d: %ld, %ld\n", i, line, offset);
+		if (line == ((size_t) -1)) break;
+
+		int chrprinted = 0;// offset;
+		Segment *current_segment = &t->sg[line];
+		source_buffer_range buf = ConsumeCount(current_segment->buf, offset);
+		while (buf.Count) {
+			for (int j = 0; j < buf.Count; ++j) {
+				char ch = buf.Data[j];
+				SetCell(t, chrprinted + j, i, ch);
+			}
+			chrprinted += buf.Count;
+			if (current_segment->line_end) break;
+			if (chrprinted >= t->tw) break;
+			current_segment++;
+			buf = current_segment->buf;
+		}
+	}
+	printf("\n");
+	TracyCZoneEnd(ctx);
+	return;
 }
 
 void prep_tex(unsigned int tex, int texnum, int attridx) {
@@ -115,59 +217,58 @@ void prep_tex(unsigned int tex, int texnum, int attridx) {
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 }
 
-OGLContext prepare_glcontext() {
-	OGLContext ctx = {};
+void prepare_glcontext(Terminal *t) {
 	int shaders[2] = { compile_shader("grid.v.glsl", GL_VERTEX_SHADER), compile_shader("grid.f.glsl", GL_FRAGMENT_SHADER) };
-	ctx.prog  = create_program(2, shaders);
+	t->glres.program  = create_program(2, shaders);
 	for (int i = 0; i < 2; ++i) {
 		glDeleteShader(shaders[i]);
 	}
 
+	glUseProgram(t->glres.program);
+
 	float vertices[] ={ -1., 3, -1., -1., 3., -1 };
-	memcpy(ctx.vertices, vertices, sizeof(float) * 6);
+	memcpy(t->glres.vertices, vertices, sizeof(float) * 6);
 
-	glGenVertexArrays(1, &ctx.VAO);
-	glBindVertexArray(ctx.VAO);
-	glGenBuffers(1, &ctx.VBO);
+	glGenVertexArrays(1, &t->glres.VAO);
+	glBindVertexArray(t->glres.VAO);
+	glGenBuffers(1, &t->glres.VBO);
 
-	glBindBuffer(GL_ARRAY_BUFFER, ctx.VBO);
+	glBindBuffer(GL_ARRAY_BUFFER, t->glres.VBO);
 	glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
 
 	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void*)0);
 	glEnableVertexAttribArray(0);
 
-	glUseProgram(ctx.prog);
-	glBindVertexArray(ctx.VAO);
+	glGenTextures(1, &t->glres.glyph_tex);
+	glGenTextures(1, &t->glres.cell_tex);
+	t->glres.gt_slot = 0;
+	t->glres.ct_slot = 1;
+	prep_tex(t->glres.glyph_tex, t->glres.gt_slot, 1);
+	prep_tex(t->glres.cell_tex, t->glres.ct_slot, 2);
 
-	glGenTextures(2, ctx.tex);
-	prep_tex(ctx.tex[0], 0, 2);
-	prep_tex(ctx.tex[1], 1, 1);
+	glEnable(GL_SCISSOR_TEST);
 
-	glFinish();
-	return ctx;
+	/* glFinish(); */
 }
 
-void clean_glcontext(OGLContext ctx) {
-	glDeleteVertexArrays(1, &ctx.VAO);
-	glDeleteBuffers(1, &ctx.VBO);
-	glDeleteProgram(ctx.prog);
-}
+/* void clean_glcontext(OGLContext ctx) { */
+/* 	glDeleteVertexArrays(1, &ctx.VAO); */
+/* 	glDeleteBuffers(1, &ctx.VBO); */
+/* 	glDeleteProgram(ctx.prog); */
+/* } */
 
-void print_array(char **a, int len) {
-	for (int i = 0; i < len; ++i) {
-		printf("%s, ", a[i]);
-	}
-	printf("\n");
-}
+#undef printf
 int main(int argc, char *argv[]) {
 	setbuf(stdout, NULL);
-    for (int opt; (opt = getopt(argc, argv, "")) != -1; ) { switch(opt) { } } // TODO(ym):
+	for (int opt; (opt = getopt(argc, argv, "")) != -1; ) { switch(opt) { } } // TODO(ym):
 
 	char **args = NULL;
 	if (optind < argc) {
 		args = &argv[optind];
-		printf("Non-option args: ");
-		print_array(argv + optind, argc - optind);
+		for (char **i = argv + optind; i < argv + argc; ++i) {
+			printf("%s, ", *i);
+		}
+		printf("\n");
 	}
 
 	if (!args) {
@@ -176,21 +277,15 @@ int main(int argc, char *argv[]) {
 
 	Display *d = XOpenDisplay(NULL);
 
-#if 0
-	int pagesize = getpagesize();
-#else
-	int pagesize = sysconf(_SC_PAGESIZE);
-#endif
+	Terminal t = create_terminal(d, getps() * 256 * 2, args);
+	/* fcntl(t.cmdfd, F_SETFL, O_NONBLOCK); */
+	/* printf("fcntl return type %d\n", ); */
+	/* if (= -1) */
+	/* 	printf("O_NONBLOCK FAILED\n"); */
 
-#define IsPowerOfTwo(x) (((x) & (x - 1)) == 0)
-	assert(IsPowerOfTwo(pagesize));
-
-	Terminal t = create_terminal(d, pagesize * 20, args);
-
-	map_window(&t.xw);
 	if (!gladLoadGL()) die("Couldn't load opengl\n"); // TODO(ym): Check if glad is already loaded
-    glEnable(GL_DEBUG_OUTPUT);
-    glDebugMessageCallback(MessageCallback, 0);
+	glEnable(GL_DEBUG_OUTPUT);
+	glDebugMessageCallback(MessageCallback, 0);
 
 	t.gh = 12;
 	t.gw = 0;
@@ -202,19 +297,26 @@ int main(int argc, char *argv[]) {
 	FTFont f = load_font(ftlib, "/home/ym/.local/share/fonts/curieMedium.otb", t.gw, t.gh);
 	t.gw = f.cellwidth;
 
+	prepare_glcontext(&t);
+	set_props(f);
+	glDisable(GL_MULTISAMPLE);
+
+	map_window(&t);
 	set_terminalsz(&t);
 
-	OGLContext ctx = prepare_glcontext();
-	set_props(f);
 
 	float *data = render_ascii(f, ftlib);
+	glActiveTexture(GL_TEXTURE0 + t.glres.gt_slot);
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, f.cellwidth * 10, f.cellheight * 10, 0, GL_RGBA, GL_FLOAT, data);
 
-	glTexImage2D(GL_TEXTURE_2D, 1, GL_RGBA, 0, 0, 0, GL_RGBA, GL_FLOAT, (float *) NULL);
+	glActiveTexture(GL_TEXTURE0 + t.glres.ct_slot);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32UI, t.tw, t.th, 0, GL_RGBA_INTEGER, GL_UNSIGNED_INT, (unsigned int *) NULL);
 
-	char x[0x1000] = {};
 	int xfd = XConnectionNumber(d);
 	XEvent xev;
+	t.cmdfd = ttynew("/bin/bash", args);
+	t.lines[0] = 0;
+	/* fcntl(t.cmdfd, F_SETFL, O_NONBLOCK); */
 	while (1) {
 		TracyCFrameMarkStart("Frame");
 
@@ -229,13 +331,8 @@ int main(int argc, char *argv[]) {
 
 		struct timespec ts = { .tv_sec = timeout / 1E3, .tv_nsec = 1E6 * (timeout - 1E3 * ts.tv_sec) };
 
-		// Defined in TracyC.h
-#ifndef MAX
-#define MAX(a, b) ((a) < (b) ? (b) : (a))
-#endif
-
 		{
-			TracyCZoneN(ctx, "PSelect", 1);
+			TracyCZoneN(ctx, "PSelect", true);
 			if (pselect(MAX(xfd, t.cmdfd)+1, &y, NULL, NULL, &ts, NULL) < 0) {
 				if (errno == EINTR)
 					continue;
@@ -244,240 +341,101 @@ int main(int argc, char *argv[]) {
 			TracyCZoneEnd(ctx);
 		}
 
-		if (XPending(d)) {
-			TracyCZoneN(ctx, "X11 code", 1);
-			XNextEvent(d, &xev);
-			if (handler[xev.type]) {
-				handler[xev.type](&t, &xev);
-			}
-			TracyCZoneEnd(ctx);
-		}
-
-		if (FD_ISSET(t.cmdfd, &y)) {
-			TracyCZoneN(ctx, "Reading loop", 2);
-			int r = read(t.cmdfd, x, 0x1000);
-			TracyCZoneEnd(ctx);
-		}
-
 		{
-			TracyCZoneN(ctx, "drawing loop", 3);
-			/* clear_screen(v, sz.x, sz.y); */
-			/* render(sz.x, sz.y, v, ms, c); */
-
-			/* glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, sz.x, sz.y, GL_RGBA_INTEGER, GL_UNSIGNED_INT, v); */
-
-			{
-				glDrawArrays(GL_TRIANGLES, 0, 3);
-				glFinish();
-				glXSwapBuffers(d, t.xw.win);
-				/* XFlush(d); */
-			}
-			TracyCZoneEnd(ctx);
-		}
-
-		TracyCFrameMarkEnd("Frame");
-
-	}
-
-	clean_glcontext(ctx);
-	XCloseDisplay(d);
-}
-
-#if 0
-int main(int argc, char *argv[]) {
-
-	char *cmd = NULL;
-
-    for (int opt; (opt = getopt(argc, argv, "")) != -1; ) {
-        switch(opt) {
-			/* case 'c': */
-			/* 	cmd = optarg; */
-			/* 	break; */
-        }
-    }
-
-	char **args;
-	if (optind < argc)
-	{
-		args = &argv[optind];
-		printf("Non-option args: ");
-		while (optind < argc)
-			printf("%s ", argv[optind++]);
-		printf("\n");
-	}
-
-	/* setbuf(stdout, NULL); */
-	/* setlocale(LC_ALL, "C.UTF-8"); */
-
-	create_cbuf(4096);
-
-	printf("print: %d\n", print);
-	/* printf("cmd: %s\n", cmd); */
-
-	int cmdfd = ttynew("/bin/bash", args);
-
-	/* int flags = fcntl(cmdfd, F_GETFL, 0); */
-	/* fcntl(cmdfd, F_SETFL, flags | O_NONBLOCK); */
-	Display *d = XOpenDisplay(NULL);
-	if (d == NULL) {
-		fprintf(stderr, "Cannot open display\n");
-		exit(-1);
-	}
-
-	Vec wz = {};
-	{
-		XEvent xev;
-		do {
-			XNextEvent(d, &xev);
-			if (XFilterEvent(&xev, None)) {
-				continue;
-			} else if (xev.type == ConfigureNotify) {
-				wz.x = xev.xconfigure.width;
-				wz.y = xev.xconfigure.height;
-				printf("%d, %d\n", wz.x, wz.y);
-			}
-		} while (xev.type != MapNotify);
-	}
-
-	FT_Library library;
-	if(FT_Init_FreeType(&library)) {
-		die("Couldn't load freetype");
-	}
-	FTFont f = load_font(library, "/home/ym/.local/share/fonts/curieMedium.otb", 0, 12);
-	/* FTFont f = load_font(library, "/usr/share/fonts/misc/ter-u28b.otb", 0, 16); */
-	/* FTFont font = load_font(library, "/usr/share/fonts/liberation/LiberationMono-Regular.ttf", 0, 16); */
-	/* FTFont font = load_font(library, "/usr/share/fonts/TTF/Roboto-Regular.ttf", 0, 16); */
-	/* FTFont f = load_font(library, "/usr/share/fonts/noto/NotoSansMono-Regular.ttf", 0, 16); */
-
-	Vec sz = screensize(wz, f);
-	unsigned int *v = update_screen(sz.x, sz.y);
-
-#define SIZE 0x1000
-	char x[SIZE] = {0};
-
-	unsigned int *ms = calloc(sz.x * sz.y, sizeof(*ms));
-	Vec c = {0};
-
-	XEvent xev;
-	int xfd = XConnectionNumber(d);
-
-	fd_set y;
-	while(1) {
-		TracyCFrameMarkStart("Frame");
-
-		FD_ZERO(&y);
-		FD_SET(cmdfd, &y);
-		FD_SET(xfd, &y);
-
-
-		float timeout = 16; //ms
-		if (XPending(d))
-			timeout = 0;  /* existing events might not set xfd */
-
-		struct timespec ts = { .tv_sec = timeout / 1E3, .tv_nsec = 1E6 * (timeout - 1E3 * ts.tv_sec) };
-
-#define MAX(a, b) ((a) < (b) ? (b) : (a))
-
-		{
-			TracyCZoneN(ctx, "PSelect", 1);
-			if (pselect(MAX(xfd, cmdfd)+1, &y, NULL, NULL, &ts, NULL) < 0) {
-				if (errno == EINTR)
-					continue;
-				die("select failed: %s\n", strerror(errno));
-			}
-			TracyCZoneEnd(ctx);
-		}
-
-		if (XPending(d)) {
-			TracyCZoneN(ctx, "X11 code", 1);
+			TracyCZoneN(ctx, "X11 code", true);
 			while (XPending(d)) {
 				XNextEvent(d, &xev);
-				switch (xev.type) {
-					case ButtonPress: {
-					} break;
-					case ConfigureNotify: {
-						Vec wz_t = {.x = xev.xconfigure.width, .y = xev.xconfigure.height };
-						if (wz.x == wz_t.x && wz.y == wz_t.y) {
-							continue;
-						}
-
-						wz = wz_t;
-						sz = screensize(wz, f);
-						free(v);
-						free(ms);
-
-						ms = calloc(sz.x * sz.y, sizeof(*ms));
-						v = update_screen(sz.x, sz.y);
-
-						glScissor(0, 0, wz.x, wz.y);
-						glEnable(GL_SCISSOR_TEST);
-						glViewport(0, 0, wz.x, wz.y);
-					} break;
-					case KeyPress: {
-						char b[36] = {};
-						KeySym keysym;
-						int l = XLookupString(&xev.xkey, b, sizeof(b), &keysym, NULL);
-						printf("B: ");
-						for (int i = 0; i < l; i++) {
-							printf("%x, ", b[i]);
-						}
-						printf("\n");
-						if (l == 1 && b[0] < 0x80) {
-							if (b[0] == '\r') {
-								write(cmdfd, "\r\n", 2);
-							}
-							write(cmdfd, b, l);
-						} else if (keysym == 0xff52) {
-							char *s = "\033[A\0";
-							write(cmdfd, s, strlen(s));
-						} else {
-							printf("Unknown keycode received: %x\n", keysym);
-						}
-					} break;
-
-					case ClientMessage: {
-						printf("Received client message\n");
-						if ((Atom)xev.xclient.data.l[0] == atom) {
-							return 0;
-							/* exit(0); */
-						}
-					} break;
+				if (XFilterEvent(&xev, None)) continue;
+				if (handler[xev.type]) {
+					handler[xev.type](&t, &xev);
 				}
 			}
 			TracyCZoneEnd(ctx);
 		}
 
-		if (FD_ISSET(cmdfd, &y)) {
-			TracyCZoneN(ctx, "Reading loop", 2);
-			int r = read(cmdfd, x, SIZE);
+		if (FD_ISSET(t.cmdfd, &y)) {
+			TracyCZoneN(ctx, "Reading loop", true);
+			int r = 0;
+			long long ts = get_time();
+			long long te = ts;
+			long num_reads = 0;
+			source_buffer_range x = GetNextWritableRange(&t.buf, LARGEST_AVAILABLE);
+			/* printf("x.Count: %d\n", x.Count); */
+			long rd = 0;
+
+
+			TCursor c = {};
+			fd_set z;
+			FD_ZERO(&z);
+			FD_SET(t.cmdfd, &z);
+			struct timespec tz = { .tv_sec = 0, .tv_nsec = 0 };
+			while ((pselect(t.cmdfd + 1, &z, NULL, NULL, &tz, NULL) > 0) && !XPending(d) && (te - ts) < 36e6 && (x.Count - rd) > 0) {
+				if (FD_ISSET(t.cmdfd, &z)) {
+					errno = 0;
+					r = read(t.cmdfd, x.Data + rd, x.Count - rd);
+					/* printf("%d\n", r); */
+					if (r > -1)  {
+						rd += r;
+						num_reads++;
+						/* x.Data[r] = 0; // Can be out of bounds */
+						/* printf("%s", x.Data); */
+						/* x.Count = r; */
+						/* CommitWrite(&t.buf, r); */
+						/* ProcessInput(&t, x); */
+						t.render = true;
+						te = get_time();
+						/* printf("count - rd: %d\n", x.Count - rd); */
+					} else {
+						break;
+					}
+				} else {
+					break;
+				}
+			}
+
+			/* if (num_reads) { */
+			/* 	printf("num_reads: %ld\n", num_reads); */
+			/* } */
+				if (rd != 0) {
+					x.Count = rd;
+					/* printf("%.*s\n", rd, x.Data); */
+					CommitWrite(&t.buf, rd);
+					ProcessInput(&t, &c, x);
+				}
+
 			TracyCZoneEnd(ctx);
 		}
 
 		{
-			TracyCZoneN(ctx, "drawing loop", 3);
-			clear_screen(v, sz.x, sz.y);
-			render(sz.x, sz.y, v, ms, c);
+			TracyCZoneN(ctx, "drawing loop", true);
+			if (t.render) {
+				clear_screen(t.screen, t.tw, t.th);
 
-			glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, sz.x, sz.y, GL_RGBA_INTEGER, GL_UNSIGNED_INT, v);
+				Render(&t);
+				t.render = false;
 
-			{
-				glDrawArrays(GL_TRIANGLES, 0, 3);
-				glFinish();
-				glXSwapBuffers(d, win);
-				XFlush(d);
+				TracyCZoneN(ctx, "uploading to gpu", true);
+				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, t.tw , t.th, GL_RGBA_INTEGER, GL_UNSIGNED_INT, t.screen);
+				/* glFinish(); */
+				TracyCZoneEnd(ctx);
+
+				{
+					TracyCZoneN(ctx, "Rendering", true);
+					glDrawArrays(GL_TRIANGLES, 0, 3);
+					glFinish();
+					glXSwapBuffers(d, t.xw.win);
+					/* XFlush(d); */
+					TracyCZoneEnd(ctx);
+				}
 			}
 			TracyCZoneEnd(ctx);
 		}
 
 		TracyCFrameMarkEnd("Frame");
+
 	}
 
-	glDeleteVertexArrays(1, &VAO);
-	glDeleteBuffers(1, &VBO);
-	glDeleteProgram(prog);
-
+	/* clean_glcontext(ctx); */
 	XCloseDisplay(d);
-
-	return 0;
 }
-#endif
+

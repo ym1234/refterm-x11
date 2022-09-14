@@ -14,7 +14,7 @@ layout(location = 6)  uniform uint BlinkModulate;
 layout(location = 7)  uniform uint MarginColor;
 
 layout(location = 8)  uniform uvec2 StrikeThrough; // Min, Max
-layout(location = 9) uniform uvec2 Underline; // Min, Max
+layout(location = 9)  uniform uvec2 Underline; // Min, Max
 
 vec3 UnpackColor(uint Packed) {
     uint B = Packed & 0xffu;
@@ -25,7 +25,7 @@ vec3 UnpackColor(uint Packed) {
 }
 
 vec4 ComputeOutputColor(in uvec2 ScreenPos) {
-    uvec2 CellIndex = uvec2(floor((ScreenPos - TopLeftMargin) / CellSize));
+    ivec2 CellIndex = ivec2(floor((ScreenPos - TopLeftMargin) / CellSize));
     uvec2 CellPos = (ScreenPos - TopLeftMargin) % CellSize;
 
     vec3 Result;
@@ -35,7 +35,7 @@ vec4 ComputeOutputColor(in uvec2 ScreenPos) {
             (CellIndex.x < TermSize.x) &&
             (CellIndex.y < TermSize.y))
     {
-        uvec4 CellProperties = texelFetch(TerminalCell, ivec2(CellIndex), 0); // .y * TermSize.x + CellIndex.x);
+        uvec4 CellProperties = texelFetch(TerminalCell, CellIndex, 0); // .y * TermSize.x + CellIndex.x);
         vec4 GlyphTexel = texelFetch(Glyphs, ivec2(CellProperties.xy*CellSize + CellPos), 0);
 
         vec3 Foreground = UnpackColor(CellProperties.z);

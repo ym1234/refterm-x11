@@ -6,33 +6,34 @@
 typedef struct {
 	FT_Face face;
 
-	size_t descent;
-	size_t ascent;
+	int descent;
+	int ascent;
 
-	size_t cellwidth;
-	size_t cellheight;
+	int cellwidth;
+	int cellheight;
 
-	size_t underline;
-	size_t underline_thickness;
+	int underline;
+	int underline_thickness;
 } FTFont;
 
 #define FT_ASSERT(x) \
 	do {\
 		FT_Error error;\
-		if (error = (x)) {\
+		if ((error = (x))) {\
 			die("%s:%d 0x%x, %s\n", __FILE__, __LINE__, error, FT_Error_String(error));\
 		}\
 	} while (0)
 
 #define INDEX(k, f, l, m) (4 * ((k) * columns * rows * 10 + (f) * columns + (l) * columns * 10 + (m)))
 
+#define ARRSIZE(x) (sizeof(x) / sizeof(*x))
 static char ascii_printable[] =
 	" !\"#$%&'()*+,-./0123456789:;<=>?"
 	"@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_"
 	"`abcdefghijklmnopqrstuvwxyz{|}~";
 
 
-static inline float *render_cursor(float *data, int rows, int columns) {
+static inline void render_cursor(float *data, int rows, int columns) {
 	size_t charnum = strlen(ascii_printable);
 	int k = charnum / 10;
 	int f = charnum % 10;
@@ -48,7 +49,7 @@ static inline float *render_cursor(float *data, int rows, int columns) {
 	}
 }
 
-static inline float *render_baseline(float *data, int rows, int columns, int descent) {
+static inline void render_baseline(float *data, int rows, int columns, int descent) {
 	for (int i = 0; i < 10; i++) {
 		int i1 = INDEX(i + 1, 0, -1, 0);
 		int i2 = INDEX(i, 0, rows - descent, 0);
