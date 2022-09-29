@@ -47,6 +47,23 @@ static source_buffer_range AdvanceRange(source_buffer_range Source, size_t ToAbs
     return Result;
 }
 
+static source_buffer_range ConsumeCountBack(source_buffer_range Source, size_t Count)
+{
+    source_buffer_range Result = Source;
+
+    if(Count > Result.Count)
+    {
+        printf("Count > Source.Count\n");
+        Count = Result.Count;
+    }
+
+    /* Result.Data += Count; */
+    /* Result.AbsoluteP += Count; */
+    Result.Count -= Count;
+
+    return Result;
+}
+
 static source_buffer_range ConsumeCount(source_buffer_range Source, size_t Count)
 {
     source_buffer_range Result = Source;

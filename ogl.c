@@ -71,7 +71,7 @@ GLXFBConfig getfbc(Display *d) {
 		GLX_ALPHA_SIZE       , 8,
 		GLX_DEPTH_SIZE       , 0,
 		GLX_STENCIL_SIZE     , 0,
-		GLX_DOUBLEBUFFER     , False,
+		GLX_DOUBLEBUFFER     , True,
 		/* GLX_SAMPLE_BUFFERS, 1, */
 		/* GLX_SAMPLES       , 4, */
 		None

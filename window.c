@@ -58,8 +58,6 @@ typedef struct {
 	Segment *sg;
 
 	size_t SegmentCount;
-	uint64_t anchor; // Everything before this is in the back buffer
-	uint64_t anchor_start; // TODO(ym): Idk if I'm going to use this
 
 	int cmdfd;
 	bool render;
@@ -70,11 +68,12 @@ typedef struct {
 	int gw, gh; // Glyph dimensions
 
 	unsigned int *screen; // always synced with tty size
-	size_t *offsets;
-	size_t *lines;
-	size_t CurrentLine;
-	size_t AnchorLine;
-	size_t CurrentLineWidth;
+	/* size_t *offsets; */
+	/* size_t *lines; */
+	/* size_t CurrentLine; */
+	int CursorX, CursorY;
+	/* size_t AnchorLine; */
+	/* size_t CurrentLineWidth; */
 
 	Font pf; // primary font
 	Font fbf; // fallback font
@@ -154,37 +153,37 @@ void map_window(Terminal *t) {
 }
 
 
-void resize_screen(Terminal *t, int oh, int ow) {
+void resize_screen(Terminal *t) {
 
-	static int startup = 0;
+/* 	static int startup = 0; */
 
-	size_t *lines_tmp = calloc(t->th, sizeof(size_t));
-	size_t *offsets_tmp = calloc(t->th, sizeof(size_t));
+/* 	size_t *lines_tmp = calloc(t->th, sizeof(size_t)); */
+/* 	size_t *offsets_tmp = calloc(t->th, sizeof(size_t)); */
 
-	if (startup) {
-		for (int i = MIN(t->CurrentLine - t->AnchorLine, t->th) - 1; i >= 0 ; --i) {
-			int idx = t->CurrentLine-- % oh;
-			if (idx < 0) idx += oh;
-			printf("idx: %d\n", idx);
-			lines_tmp[i] = t->lines[idx];
-			offsets_tmp[i] = t->offsets[idx];
-		}
-		/* for (int i = 0; i < t->th; ++i) { */
-		/* 	t->lines[i] = (size_t) -1; */
-		/* } */
-		/* t->offsets = calloc(t->th, sizeof(size_t)); // TODO(ym): realloc this */
-	}
+/* 	if (startup) { */
+/* 		for (int i = MIN(t->CurrentLine - t->AnchorLine, t->th) - 1; i >= 0 ; --i) { */
+/* 			int idx = t->CurrentLine-- % oh; */
+/* 			if (idx < 0) idx += oh; */
+/* 			printf("idx: %d\n", idx); */
+/* 			lines_tmp[i] = t->lines[idx]; */
+/* 			offsets_tmp[i] = t->offsets[idx]; */
+/* 		} */
+/* 		/1* for (int i = 0; i < t->th; ++i) { *1/ */
+/* 		/1* 	t->lines[i] = (size_t) -1; *1/ */
+/* 		/1* } *1/ */
+/* 		/1* t->offsets = calloc(t->th, sizeof(size_t)); // TODO(ym): realloc this *1/ */
+/* 	} */
 
 	if(t->screen) free(t->screen);
-	if(t->lines) free(t->lines);
-	if(t->offsets) free(t->offsets);
+	/* if(t->lines) free(t->lines); */
+	/* if(t->offsets) free(t->offsets); */
 
 	t->screen = calloc(4 * t->th * t->tw, sizeof(*t->screen));
-	t->AnchorLine = 0;
-	t->lines = lines_tmp; //calloc(t->th, sizeof(size_t)); // TODO(ym): realloc this
-	t->offsets = offsets_tmp; //calloc(t->th, sizeof(size_t)); // TODO(ym): realloc this
+	/* t->AnchorLine = 0; */
+	/* t->lines = lines_tmp; //calloc(t->th, sizeof(size_t)); // TODO(ym): realloc this */
+	/* t->offsets = offsets_tmp; //calloc(t->th, sizeof(size_t)); // TODO(ym): realloc this */
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32UI, t->tw, t->th, 0, GL_RGBA_INTEGER, GL_UNSIGNED_INT,  (unsigned int *) NULL);// t->screen);
-	startup = 1;
+	/* startup = 1; */
 }
 
 /* void resize_screen(Terminal *t) { */
@@ -205,12 +204,10 @@ void resize_screen(Terminal *t, int oh, int ow) {
 void set_terminalsz(Terminal *t) {
 	assert(t->gh != 0 && t->gw != 0);
 
-	int oh = t->th;
-	int ow = t->tw;
 	t->th = (t->xw.h - t->borderpx) / t->gh;
 	t->tw = (t->xw.w - t->borderpx) / t->gw;
 	glUniform2ui(4, t->tw, t->th);
-	resize_screen(t, oh, ow);
+	resize_screen(t);
 }
 
 Terminal create_terminal(Display *d, ssize_t bz, char **args) {
@@ -226,7 +223,7 @@ Terminal create_terminal(Display *d, ssize_t bz, char **args) {
 	assert(t.sg != MAP_FAILED);
 
 	t.glctx = create_glcontext(d);
-	t.CurrentLine = 0;
+	/* t.CurrentLine = 0; */
 	assert(glXMakeCurrent(t.xw.d, t.xw.win, t.glctx) == True);
 	return t;
 }

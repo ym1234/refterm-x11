@@ -1,11 +1,13 @@
 #version 430
 
+#define GAMMA_FACTOR 2.4
+
 layout(origin_upper_left) in vec4 gl_FragCoord;
 
 layout(location = 0) out vec4 color;
 
 layout(location = 1)  uniform sampler2D Glyphs;
-layout(location = 2)  uniform usampler2D TerminalCell; // GlyphIndexX, GlyphIndexY, Foreground, Background
+layout(location = 2)  uniform usampler2D TerminalCell; // GlyphIndexX, GlyphIndexY, Foreground (2.2 Gamma Corrected), Background (2.2 Gamma Corrected)
 
 layout(location = 3)  uniform uvec2 CellSize;
 layout(location = 4)  uniform uvec2 TermSize;
@@ -14,7 +16,7 @@ layout(location = 6)  uniform uint BlinkModulate;
 layout(location = 7)  uniform uint MarginColor;
 
 layout(location = 8)  uniform uvec2 StrikeThrough; // Min, Max
-layout(location = 9)  uniform uvec2 Underline; // Min, Max
+layout(location = 9) uniform uvec2 Underline; // Min, Max
 
 vec3 UnpackColor(uint Packed) {
     uint B = Packed & 0xffu;
@@ -25,7 +27,7 @@ vec3 UnpackColor(uint Packed) {
 }
 
 vec4 ComputeOutputColor(in uvec2 ScreenPos) {
-    ivec2 CellIndex = ivec2(floor((ScreenPos - TopLeftMargin) / CellSize));
+    uvec2 CellIndex = uvec2(floor((ScreenPos - TopLeftMargin) / CellSize));
     uvec2 CellPos = (ScreenPos - TopLeftMargin) % CellSize;
 
     vec3 Result;
@@ -35,19 +37,21 @@ vec4 ComputeOutputColor(in uvec2 ScreenPos) {
             (CellIndex.x < TermSize.x) &&
             (CellIndex.y < TermSize.y))
     {
-        uvec4 CellProperties = texelFetch(TerminalCell, CellIndex, 0); // .y * TermSize.x + CellIndex.x);
+        uvec4 CellProperties = texelFetch(TerminalCell, ivec2(CellIndex), 0); // .y * TermSize.x + CellIndex.x);
         vec4 GlyphTexel = texelFetch(Glyphs, ivec2(CellProperties.xy*CellSize + CellPos), 0);
 
         vec3 Foreground = UnpackColor(CellProperties.z);
         vec3 Background = UnpackColor(CellProperties.w);
         vec3 Blink = UnpackColor(BlinkModulate);
 
+        Foreground = pow(Foreground, vec3(GAMMA_FACTOR));
+        Background = pow(Background, vec3(GAMMA_FACTOR));
+
         if(bool((CellProperties.z >> 28) & 1u)) Foreground *= Blink;
         if(bool((CellProperties.z >> 25) & 1u)) Foreground *= 0.5;
 
-        /* // TODO: proper ClearType blending */
-        Result = (1-GlyphTexel.a)*Background + GlyphTexel.rgb*Foreground;
-        /* Result = GlyphTexel.rgb; */
+        // TODO: Is this correct? + Gamma calculations
+        Result = (1-GlyphTexel.rgb)*Background + GlyphTexel.rgb*Foreground;
 
         if (bool(CellProperties.z >> 27 & 1u) &&
                 (CellPos.y >= Underline.x) &&
@@ -56,8 +60,11 @@ vec4 ComputeOutputColor(in uvec2 ScreenPos) {
                 (CellPos.y >= StrikeThrough.x) &&
                 (CellPos.y < StrikeThrough.y)) Result.rgb = Foreground.rgb;
     } else {
-        Result = UnpackColor(MarginColor);
+        Result = pow(UnpackColor(MarginColor), vec3(GAMMA_FACTOR));
     }
+
+    // Either use this or GL_FRAMEBUFFER_SRGB
+    Result = pow(Result, vec3(1.0/GAMMA_FACTOR));
 
     // NOTE(casey): Uncomment this to view the cache texture
     /* Result = texelFetch(Glyphs, ivec2(ScreenPos), 0).rgb; */

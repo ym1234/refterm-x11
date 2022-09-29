@@ -4,6 +4,7 @@
 
 #include "/home/ym/fun/tracy/public/tracy/TracyC.h"
 #include <sys/mman.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <termios.h>
@@ -30,8 +31,7 @@
 #define MAX(a, b) ((a) < (b) ? (b) : (a))
 #endif
 #ifndef MIN
-
-#define MAX(a, b) ((a) > (b) ? (b) : (a))
+#define MIN(a, b) ((a) > (b) ? (b) : (a))
 #endif
 
 void die(char *format, ...) {
@@ -63,11 +63,31 @@ long getps(void) {
 #include "tty.c"
 #include "window.c"
 
-#define printf(...)
+// This sort of works, but the errors just keep pilling up with each iteration and it ends up looking like a slightly different color
+/* unsigned int gamma_correct(unsigned int color) { */
+/* 	return color; */
+/* 	unsigned int result = 0; */
+/* 	for (int i = 0; i < 4; ++i) { */
+/* 		int shift = i * 8; */
+/* 		int c = (color >> shift) & 0xff; */
+/* 		float cf = c / 255.; */
+
+/* 		cf = MAX(cf, 0); */
+/* 		cf = MIN(cf, 1); */
+
+/* 		int gc = ceil(255 * pow(cf, 2.2)); */
+/* 		result |= gc << shift; */
+/* 	} */
+/* 	return result; */
+/* } */
+
+/* #define printf(...) */
 void clear_screen(unsigned int *screen, int width, int height) {
 	TracyCZoneN(ctx, "clearing screen", true);
 	/* int s = ARRSIZE(ascii_printable); */
 	unsigned int vertex[4] = { 0, 0, 0x00C5C8C6, 0x1d1f21 };
+	/* unsigned int vertex[4] = { 0, 0, 0x00FFFFFF, 0x1d1f21 }; */
+	/* unsigned int vertex[4] = { 0, 0, 0x00FFFFFF, 0x000000 }; */
 	/* unsigned int vertex[4] = { 0, 0, 0, 0 }; */
 	for (int i = 0; i < width * height * 4; i += 4) {
 		int index = i % 4;
@@ -82,39 +102,25 @@ void clear_screen(unsigned int *screen, int width, int height) {
 	/* glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA_INTEGER, GL_UNSIGNED_INT, screen); */
 }
 
-size_t CurrentLine(Terminal *t) {
-	return t->CurrentLine % t->th;
-}
 
 void AdvanceRow(Terminal *t) {
-	t->CurrentLineWidth = 0;
-	t->CurrentLine++;
-
-	if (t->CurrentLine - t->AnchorLine >= t->th) {
-		size_t x = (t->CurrentLine - t->AnchorLine) - t->th + 1;
-		/* printf("x: %d, currentline - anchorline: %d\n", x, t->CurrentLine - t->AnchorLine); */
-		for (int i = 0; i < x; i++) {
-			t->lines[(t->AnchorLine + i) % t->th] = 0;
-			t->offsets[(t->AnchorLine + i) % t->th] = 0;
-		}
-		t->AnchorLine += x;
-		printf("Current Anchor: %d\n", t->AnchorLine);
+	++t->CursorY;
+	t->CursorX = 0;
+	if (t->CursorY >= t->th) {
+		t->CursorY = t->th - 1; // Clip to the bottom
 	}
-	t->lines[CurrentLine(t)] = t->SegmentCount;
-	t->offsets[CurrentLine(t)] = 0;
 }
 
 void AdvanceColumn(Terminal *t) {
-	t->CurrentLineWidth++;
-	if (t->CurrentLineWidth >= t->tw) {
+	++t->CursorX;
+	if (t->CursorX >= t->tw) {
 		AdvanceRow(t);
-		t->lines[CurrentLine(t)] = t->SegmentCount - 1;
-		t->offsets[CurrentLine(t)] = t->sg[t->SegmentCount - 1].buf.Count;
 	}
 }
 
 void SetCell(Terminal *t, int x, int y, char ch) {
-	if (ch < 32 || ch > 126) {
+	if (x < 0 || y < 0) return;
+	if (ch < 32 || ch > 127) {
 		ch = '?';
 	}
 	int idx = 4 * (y * t->tw + x);
@@ -128,7 +134,6 @@ void ProcessInput(Terminal *t, TCursor *cursor, source_buffer_range ob) {
 	assert(t->sg);
 
 	source_buffer_range buf = ob;
-	int rows_moved = 0;
 	while (buf.Count) {
 		size_t nsg = t->SegmentCount++;
 
@@ -164,42 +169,53 @@ void set_props(FTFont f) {
 	glUniform2ui(5, 4, 4); // TopLeftMargin
 
 	glUniform1ui(6, 0xffffffff); // BlinkModulate
-	glUniform1ui(7, 0x280418); // 0x1d1f21); // MarginColor
+	glUniform1ui(7, 0x1d1f21);// 0x280418); // MarginColor
 
 	glUniform2ui(8, 16/2 - 16/10, 16/2 + 16/10); // StrikeThrough
 	glUniform2ui(9, f.cellheight - f.descent + f.underline - (int)(f.underline_thickness  / 2.0 + 0.5),  f.cellheight - f.descent + f.underline - (int)(f.underline_thickness  / 2.0 + 0.5) + f.underline_thickness); // underline
-	/* glUniform2ui(9, 10, 2); */
+	glUniform2ui(9, 10, 2);
+	// glEnable(GL_FRAMEBUFFER_SRGB); // GL3 only
+}
+
+static inline bool CursorBack(size_t width, size_t height, int *CursorX, int *CursorY) {
+	--*CursorX;
+	if (*CursorX < 0) {
+		*CursorX = width - 1;
+		--*CursorY;
+	}
+	return *CursorY < 0;
 }
 
 void Render(Terminal *t) {
-	TracyCZoneN(ctx, "rendering input", true);
-	printf("Current Anchor in render: %d\n", t->AnchorLine);
-	int CursorY = 0;
+	TracyCZoneN(ctx, "Rendering input", true);
+	SetCell(t, t->CursorX, t->CursorY, '~' + 1);
 
-	for (int i = 0; i < t->CurrentLine - t->AnchorLine + 1; ++i) {
-		size_t line = t->lines[(t->AnchorLine + i) % t->th];
-		size_t offset = t->offsets[(t->AnchorLine + i) % t->th];
-		printf("loop n#%d: %ld, %ld\n", i, line, offset);
-		if (line == ((size_t) -1)) break;
+	int CursorX = t->CursorX, CursorY = t->CursorY;
+	CursorBack(t->tw, t->th, &CursorX, &CursorY);
 
-		int chrprinted = 0;// offset;
-		Segment *current_segment = &t->sg[line];
-		source_buffer_range buf = ConsumeCount(current_segment->buf, offset);
-		while (buf.Count) {
-			for (int j = 0; j < buf.Count; ++j) {
-				char ch = buf.Data[j];
-				SetCell(t, chrprinted + j, i, ch);
+	if (t->SegmentCount == 0) return;
+	Segment *cg = &t->sg[t->SegmentCount - 1];
+
+	while (cg >= t->sg && !(CursorY < 0)) {
+		Segment *start_segment = cg;
+		int count = 0;
+		do {
+			count += start_segment->buf.Count;
+			--start_segment;
+		} while (start_segment >= t->sg && count < t->th * t->tw && !start_segment->line_end);
+		if (!count) { --CursorY; goto next; }  // Purely a newline only segment
+
+		CursorX = (count - 1) % t->tw;
+		for (Segment *c = cg; c > start_segment; --c) {
+			for (int i = 0; i < c->buf.Count; i++) {
+				SetCell(t, CursorX, CursorY, c->buf.Data[c->buf.Count - i - 1]);
+				CursorBack(t->tw, t->th, &CursorX, &CursorY);
 			}
-			chrprinted += buf.Count;
-			if (current_segment->line_end) break;
-			if (chrprinted >= t->tw) break;
-			current_segment++;
-			buf = current_segment->buf;
 		}
+next:
+		cg = start_segment;
 	}
-	printf("\n");
 	TracyCZoneEnd(ctx);
-	return;
 }
 
 void prep_tex(unsigned int tex, int texnum, int attridx) {
@@ -248,7 +264,7 @@ void prepare_glcontext(Terminal *t) {
 
 	glEnable(GL_SCISSOR_TEST);
 
-	/* glFinish(); */
+	glFinish();
 }
 
 /* void clean_glcontext(OGLContext ctx) { */
@@ -287,15 +303,30 @@ int main(int argc, char *argv[]) {
 	glEnable(GL_DEBUG_OUTPUT);
 	glDebugMessageCallback(MessageCallback, 0);
 
-	t.gh = 12;
+	t.gh = 16;
 	t.gw = 0;
 
 	FT_Library ftlib;
 	if(FT_Init_FreeType(&ftlib))
 		die("Couldn't load freetype");
+	FT_Library_SetLcdFilter(ftlib, FT_LCD_FILTER_DEFAULT);
 
-	FTFont f = load_font(ftlib, "/home/ym/.local/share/fonts/curieMedium.otb", t.gw, t.gh);
+	FTFont f;
+	f = load_font(ftlib, "/home/ym/.local/share/fonts/curieMedium.otb", t.gw, t.gh);
+	/* f = load_font(ftlib, "/usr/share/fonts/TTF/ComicMono.ttf", t.gw, t.gh); */
+	/* f = load_font(ftlib, "/usr/share/fonts/TTF/Inconsolata-Black.ttf", t.gw, t.gh); */
+	/* f = load_font(ftlib, "/usr/share/fonts/adobe-source-code-pro/SourceCodePro-Regular.otf", t.gw, t.gh); */
+	/* f = load_font(ftlib, "/usr/share/fonts/TTF/DejaVuSansMono.ttf", t.gw, t.gh); */
+	/* f = load_font(ftlib, "/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf", t.gw, t.gh); */
+	/* f = load_font(ftlib, "/usr/share/fonts/ttf-linux-libertine/LinLibertine_R.otf", t.gw, t.gh); */
+	/* f = load_font(ftlib, "/usr/share/fonts/noto/NotoSansMono-Regular.ttf", t.gw, t.gh); */
+	/* f = load_font(ftlib, "/usr/share/fonts/noto/NotoSansMono-Bold.ttf", t.gw, t.gh); */
+	/* f = load_font(ftlib, "/usr/share/fonts/adobe-source-sans/SourceSans3-Regular.otf", t.gw, t.gh); */
+	/* f = load_font(ftlib, "/usr/share/fonts/liberation/LiberationMono-Regular.ttf", t.gw, t.gh); */
+	/* f = load_font(ftlib, "/usr/share/fonts/cantarell/Cantarell-VF.otf", t.gw, t.gh); */
+	t.gh = f.cellheight;
 	t.gw = f.cellwidth;
+	printf("Glyph Width: %d\n", t.gw);
 
 	prepare_glcontext(&t);
 	set_props(f);
@@ -315,7 +346,7 @@ int main(int argc, char *argv[]) {
 	int xfd = XConnectionNumber(d);
 	XEvent xev;
 	t.cmdfd = ttynew("/bin/bash", args);
-	t.lines[0] = 0;
+	/* t.lines[0] = 0; */
 	/* fcntl(t.cmdfd, F_SETFL, O_NONBLOCK); */
 	while (1) {
 		TracyCFrameMarkStart("Frame");
