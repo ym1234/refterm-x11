@@ -137,7 +137,7 @@ int draw(Range *range, int r, unsigned int *utf32, int len2, double w, double h,
 	cairo_paint (cr);
 	cairo_set_source_rgba (cr, 0., 0., 0., 1.);
 
-	cairo_translate (cr, MARGIN, MARGIN);
+	/* cairo_translate (cr, MARGIN, MARGIN); */
 
 	double baseline = 0;
 	double current_x = 0;
@@ -161,8 +161,8 @@ int draw(Range *range, int r, unsigned int *utf32, int len2, double w, double h,
 			int idx = range[i].start + j;
 			cairo_glyphs[j].index = utf32[idx];
 			cairo_glyphs[j].x = current_x + pos[idx].x_offset / 64.;
-			/* cairo_glyphs[j].y = -(current_y + pos[idx].y_offset / 64.); */
-			cairo_glyphs[j].y = 0;
+			cairo_glyphs[j].y = -(current_y + pos[idx].y_offset / 64.);
+			/* cairo_glyphs[j].y = 0; */
 
 			current_x += pos[idx].x_advance / 64.;
 			current_y += pos[idx].y_advance / 64.;
