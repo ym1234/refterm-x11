@@ -50,7 +50,7 @@ typedef struct {
 	uint32_t *buf;
 } utf32buf;
 
-#define FONT_SIZE 20
+#define FONT_SIZE 30
 void find_font(FT_Library ft_library, FT_Face *f, hb_language_t language, unsigned int *utf32, int len) {
 	FcPattern *p = FcPatternCreate(); // TODO(ym): Destroy this later
 	FcCharSet *s = FcCharSetCreate();
@@ -106,8 +106,8 @@ void draw(drawing_context* dc, hb_buffer_t *hb_buffer, hb_font_t *hb_font) {
 	FT_Face face = hb_ft_font_get_face(hb_font);
 	if (!dc->init) {
 		drawing_context c = {
-			.width = 6 * 20 * 20,
-			.height = 20,
+			.width = 6 * 20 * 10.5,
+			.height = 35,
 			.x = 0,
 			.y = 0,
 			.ascent = face->size->metrics.ascender >> 6,
@@ -117,6 +117,7 @@ void draw(drawing_context* dc, hb_buffer_t *hb_buffer, hb_font_t *hb_font) {
 			.buf = malloc(c.width * c.height * 3 * sizeof(char)),
 			.init = true,
 		};
+		/* memset(c.buf, 255, c.width * c.height * 3); */
 		*dc = c;
 	}
 
@@ -124,6 +125,7 @@ void draw(drawing_context* dc, hb_buffer_t *hb_buffer, hb_font_t *hb_font) {
 	hb_glyph_position_t *pos = hb_buffer_get_glyph_positions (hb_buffer, NULL);
 	hb_glyph_info_t *info = hb_buffer_get_glyph_infos (hb_buffer, NULL);
 
+	int offset = 0;
 	for (unsigned int i = 0; i < len; i++) {
 		hb_codepoint_t gid   = info[i].codepoint;
 		hb_glyph_position_t p = pos[i];
@@ -135,10 +137,11 @@ void draw(drawing_context* dc, hb_buffer_t *hb_buffer, hb_font_t *hb_font) {
 		/* 	top = 0; */
 		/* } else { */
 			FT_ASSERT(FT_Load_Glyph(face, gid, FT_LOAD_DEFAULT));
-			FT_ASSERT(FT_Render_Glyph(face->glyph, FT_RENDER_MODE_LCD));
+			/* FT_ASSERT(FT_Render_Glyph(face->glyph, FT_RENDER_MODE_LCD)); */
+			FT_ASSERT(FT_Render_Glyph(face->glyph, FT_RENDER_MODE_LCD)); // FT_RENDER_MODE_NORMAL)); // FT_RENDER_MODE_LCD));
 			printf("descent: %d\n", dc->descent);
 			printf("bitmap_top: %d\n", face->glyph->bitmap_top);
-			top = 5 + FONT_SIZE - dc->descent - face->glyph->bitmap_top;
+			top = 7 + FONT_SIZE - dc->descent - face->glyph->bitmap_top;
 			printf("top: %d\n", top);
 			if (top < 0)  {
 				top = 0;
@@ -149,17 +152,18 @@ void draw(drawing_context* dc, hb_buffer_t *hb_buffer, hb_font_t *hb_font) {
 		/* printf("%d */
 
 		printf("bitmap_top: %d\n", face->glyph->bitmap_top);
-		int left = 4 * (dc->x + face->glyph->bitmap_left);
+		int left = 3 * (round(dc->x / 64.) + face->glyph->bitmap_left + offset);
 		if (left < 0) {
 			/* printf("Here"); */
-			dc->x += abs(face->glyph->bitmap_left);
-			left = dc->x;
+			dc->x += abs(face->glyph->bitmap_left) * 64.;
+			left = round(dc->x / 64.);
 		}
 
 
 		for (int l = 0; l < bitmap.rows; l++) {
 			int idx = left + 3 * dc->width * (top + l);
-			for (int z = 0; z < bitmap.width; ++z) {
+			for (int z = 1; z < bitmap.width/3; ++z) {
+
 				/* switch (bitmap.pixel_mode){ */
 					/* case 7: { */
 					/* 	// BGRA -> RGBA */
@@ -171,7 +175,24 @@ void draw(drawing_context* dc, hb_buffer_t *hb_buffer, hb_font_t *hb_font) {
 					/* } break; */
 					/* case 5: { */
 						/* if (idx % 4 == 3) dc->buf[idx++] = 1; */
-						dc->buf[idx++] = bitmap.buffer[l * bitmap.pitch + z];
+				/* dc->buf[idx++] = bitmap.buffer[l * bitmap.pitch + z]; */
+				int k = z*3;
+				float FR = 255, FG = 255 , FB = 255;
+				float BR = 0, BG = 0, BB = 0;
+				float R = bitmap.buffer[l * bitmap.pitch + k + 0] / 255.;
+				float G = bitmap.buffer[l * bitmap.pitch + k + 1] / 255.;
+				float B = bitmap.buffer[l * bitmap.pitch + k + 2] / 255.;
+				/* if(!dc->buf[idx]) { */
+					dc->buf[idx + 0] = (char) ((1. - R) * BR + FR * R);
+					dc->buf[idx + 1] = (char) ((1. - G) * BG + FG * G);
+					dc->buf[idx + 2] = (char) ((1. - B) * (float) BB + (float) FB * B);
+				/* } */
+					idx += 3;
+				/* dc->buf[idx++] =  255 - bitmap.buffer[l * bitmap.pitch + z]; */
+						/* dc->buf[idx + 0] = dc->buf[idx + 0] + bitmap.buffer[l * bitmap.pitch + z]; */
+						/* dc->buf[idx + 1] = dc->buf[idx + 1] + bitmap.buffer[l * bitmap.pitch + z]; */
+						/* dc->buf[idx + 2] = dc->buf[idx + 2] + bitmap.buffer[l * bitmap.pitch + z]; */
+						/* idx += 1; */
 					/* } break; */
 				/* } */
 			}
@@ -179,7 +200,7 @@ void draw(drawing_context* dc, hb_buffer_t *hb_buffer, hb_font_t *hb_font) {
 
 		printf("gid: %d, Bitmap: rows: %d, width: %d, pitch: %d, pixel_mode: %d, bitmap_left %d, bitmap_top: %d, x_advance: %d\n", gid, face->glyph->bitmap.rows, face->glyph->bitmap.width, face->glyph->bitmap.pitch, face->glyph->bitmap.pixel_mode, face->glyph->bitmap_left, face->glyph->bitmap_top, face->glyph->advance.x);
 		unsigned int cluster = info[i].cluster;
-		dc->x += p.x_advance >> 6; // face->glyph->advance.x >> 6;
+		dc->x += p.x_advance; // face->glyph->advance.x >> 6;
 	}
 }
 
@@ -202,10 +223,10 @@ void shape_really(FT_Face fc, hb_buffer_t *hb_buffer) {
 	{
 		hb_codepoint_t gid   = info[i].codepoint;
 		unsigned int cluster = info[i].cluster;
-		double x_advance = pos[i].x_advance / 64.;
-		double y_advance = pos[i].y_advance / 64.;
-		double x_offset  = pos[i].x_offset / 64.;
-		double y_offset  = pos[i].y_offset / 64.;
+		double x_advance = pos[i].x_advance;
+		double y_advance = pos[i].y_advance;
+		double x_offset  = pos[i].x_offset;
+		double y_offset  = pos[i].y_offset;
 
 		char glyphname[32];
 		hb_font_get_glyph_name (hb_font, gid, glyphname, sizeof (glyphname));
@@ -308,16 +329,17 @@ int main(int argc, char *argv[]) {
 	/* } */
 	/* const char *str = argv[1]; */
 	FT_Init_FreeType (&ft_library);
-	FT_Library_SetLcdFilter(ft_library, FT_LCD_FILTER_DEFAULT);
+	/* FT_Library_SetLcdFilter(ft_library, FT_LCD_FILTER_DEFAULT); */
 	/* char str[] = "a"; */
 	/* char str[] = "\xF0\x9F\x98\xB6\xE2\x80\x8D\xf0\x9f\x8c\xab"; */
 	/* char str[] = "\xF0\x9F\x98\x8A\xF0\x9F\x98\xB6\xE2\x80\x8D\xf0\x9f\x8c\xab"; */
 	/* char str[] = "الس\xF0\x9F\x98\x8A\xF0\x9F\x98\xB6\xE2\x80\x8D\xf0\x9f\x8c\xab"; */
 	/* char str[] = "hello world"; */
-	char str[] = "\xe1\x84\x82\xe1\x85\xa1\xe1\x84\x82\xe1\x85\xb3\xe1\x86\xab \xe1\x84\x92\xe1\x85\xa5\xe1\x86\xab\xe1\x84\x87\xe1\x85\xa5\xe1\x86\xb8\xe1\x84\x8b\xe1\x85\xb3\xe1\x86\xaf \xe1\x84\x8c\xe1\x85\xae\xe1\x86\xab\xe1\x84\x89\xe1\x85\xae\xe1\x84\x92\xe1\x85\xa1\xe1\x84\x80\xe1\x85\xa9 \xe1\x84\x80\xe1\x85\xae\xe1\x86\xa8\xe1\x84\x80\xe1\x85\xa1\xe1\x84\x85\xe1\x85\xb3\xe1\x86\xaf";
+	/* char str[] = "\xe1\x84\x82\xe1\x85\xa1\xe1\x84\x82\xe1\x85\xb3\xe1\x86\xab \xe1\x84\x92\xe1\x85\xa5\xe1\x86\xab\xe1\x84\x87\xe1\x85\xa5\xe1\x86\xb8\xe1\x84\x8b\xe1\x85\xb3\xe1\x86\xaf \xe1\x84\x8c\xe1\x85\xae\xe1\x86\xab\xe1\x84\x89\xe1\x85\xae\xe1\x84\x92\xe1\x85\xa1\xe1\x84\x80\xe1\x85\xa9 \xe1\x84\x80\xe1\x85\xae\xe1\x86\xa8\xe1\x84\x80\xe1\x85\xa1\xe1\x84\x85\xe1\x85\xb3\xe1\x86\xaf"; */
 	/* char str[] = "Hello world (السًٌَُلام عليكم\xF0\x9F\x98\x8A\xF0\x9F\x98\xB6\xE2\x80\x8D\xf0\x9f\x8c\xab Hello world 日本語"; */
 	/* char str[] = "Hd"; */
-	/* char str[] = "he said “\xE2\x81\xA7 お前の名前は？日本語 car تعنًَُى عًٌَُربى\xE2\x81\xA9.” “\xE2\x81\xA7نعم\xE2\x81\xA9,” she agreed."; */
+	char str[] = "he said “\xE2\x81\xA7 お前の名前は？日本語 car تعنًَُى عًٌَُربى\xE2\x81\xA9.” “\xE2\x81\xA7نعم\xE2\x81\xA9,” she agreed."
+		"\xe1\x84\x82\xe1\x85\xa1\xe1\x84\x82\xe1\x85\xb3\xe1\x86\xab \xe1\x84\x92\xe1\x85\xa5\xe1\x86\xab\xe1\x84\x87\xe1\x85\xa5\xe1\x86\xb8\xe1\x84\x8b\xe1\x85\xb3\xe1\x86\xaf \xe1\x84\x8c\xe1\x85\xae\xe1\x86\xab\xe1\x84\x89\xe1\x85\xae\xe1\x84\x92\xe1\x85\xa1\xe1\x84\x80\xe1\x85\xa9 \xe1\x84\x80\xe1\x85\xae\xe1\x86\xa8\xe1\x84\x80\xe1\x85\xa1\xe1\x84\x85\xe1\x85\xb3\xe1\x86\xaf";
 	/* char str[] =  "\xE2\x81\xA7 السلام عليكم ’\xE2\x81\xA6 he said “\xE2\x81\xA7 car MEANS CAR=”\xE2\x81\xA9‘?"; */
 
 	/* char *str = "السلام "; */
