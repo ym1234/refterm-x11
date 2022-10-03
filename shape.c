@@ -117,7 +117,8 @@ double find_font(FT_Library ft_library, FT_Face *f, hb_language_t language, unsi
 		};
 		FT_Set_Transform(*f, &m, NULL); // Doesn't seem to do anything?
 	}
-	return 0.10; // pixelfixup;
+	return 1; // pixelfixup;
+	/* return 1; // pixelfixup; */
 	/* if (FT_Set_Char_Size(*f, FONT_SIZE*64, FONT_SIZE*64, 0, 0)) */
 		/* abort(); */
 }
@@ -197,7 +198,8 @@ void draw(drawing_context* dc, hb_buffer_t *hb_buffer, double scale, hb_font_t *
 		int w = (float) bitmap.width * scale;
 		int pitch = (float) bitmap.pitch * scale;
 		/* if (scale != 1) { */
-			buf = bicubic_scaling(bitmap.buffer, bitmap.width, bitmap.rows, bitmap.pitch / 4, scale);
+			/* buf = bicubic_scaling(bitmap.buffer, bitmap.width, bitmap.rows, bitmap.pitch / 4, scale); */
+			buf = area_averaging_scale(bitmap.buffer, bitmap.width, bitmap.rows, bitmap.pitch / 4, scale);
 		/* } */
 		printf("h: %d, w: %d, pitch: %d, original_pitch: %d\n", h, w, pitch, bitmap.pitch);
 

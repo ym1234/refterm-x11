@@ -157,7 +157,7 @@ FTFont load_font(FT_Library library, char *fc, int width, int height) {
 		.descent = -face->size->metrics.descender >> 6,
 
 		.cellheight = font.ascent + font.descent,
-		.cellwidth  = (face->glyph->advance.x >> 6) / factor, // factor: Useful for subpixel antialiased fonts because they report their width a little too big for some reason?
+		.cellwidth  = (face->glyph->advance.x >> 6) / factor, // factor: useful for subpixel antialiased fonts because they report their width a little too big for some reason?
 
 		.underline = -face->underline_position >> 6,
 		.underline_thickness = face->underline_thickness >> 6
