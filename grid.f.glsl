@@ -7,7 +7,7 @@ layout(origin_upper_left) in vec4 gl_FragCoord;
 layout(location = 0) out vec4 color;
 
 layout(location = 1)  uniform sampler2D Glyphs;
-layout(location = 2)  uniform usampler2D TerminalCell; // GlyphIndexX, GlyphIndexY, Foreground (2.2 Gamma Corrected), Background (2.2 Gamma Corrected)
+layout(location = 2)  uniform usampler2D TerminalCell; // GlyphIndexX, GlyphIndexY, Foreground, Background
 
 layout(location = 3)  uniform uvec2 CellSize;
 layout(location = 4)  uniform uvec2 TermSize;
@@ -18,12 +18,38 @@ layout(location = 7)  uniform uint MarginColor;
 layout(location = 8)  uniform uvec2 StrikeThrough; // Min, Max
 layout(location = 9) uniform uvec2 Underline; // Min, Max
 
+vec3 srgb_to_linear(vec3 color) {
+    vec3 o;
+    for (int i = 0; i < 3; ++i) {
+        float c = color[i];
+        if (c <= 0.04045) {
+            o[i] = c / 12.92;
+        } else {
+            o[i] = pow((c + 0.055) / (1 + 0.055), 2.4);
+        }
+    }
+    return o;
+}
+
+vec3 linear_to_srgb(vec3 color) {
+    vec3 o;
+    for (int i = 0; i < 3; ++i) {
+        float c = color[i];
+        if (c <= 0.0031308) {
+            o[i] = c * 12.92;
+        } else {
+            o[i] = pow(c, 1/2.4) * (1 + 0.055) - 0.055;
+        }
+    }
+    return o;
+}
+
 vec3 UnpackColor(uint Packed) {
     uint B = Packed & 0xffu;
     uint G = (Packed >> 8) & 0xffu;
     uint R = (Packed >> 16) & 0xffu;
 
-    return vec3(R, G, B) / 255.0;
+    return srgb_to_linear(vec3(R, G, B) / 255.0);
 }
 
 vec4 ComputeOutputColor(in uvec2 ScreenPos) {
@@ -44,9 +70,6 @@ vec4 ComputeOutputColor(in uvec2 ScreenPos) {
         vec3 Background = UnpackColor(CellProperties.w);
         vec3 Blink = UnpackColor(BlinkModulate);
 
-        Foreground = pow(Foreground, vec3(GAMMA_FACTOR));
-        Background = pow(Background, vec3(GAMMA_FACTOR));
-
         if(bool((CellProperties.z >> 28) & 1u)) Foreground *= Blink;
         if(bool((CellProperties.z >> 25) & 1u)) Foreground *= 0.5;
 
@@ -60,13 +83,17 @@ vec4 ComputeOutputColor(in uvec2 ScreenPos) {
                 (CellPos.y >= StrikeThrough.x) &&
                 (CellPos.y < StrikeThrough.y)) Result.rgb = Foreground.rgb;
     } else {
-        Result = pow(UnpackColor(MarginColor), vec3(GAMMA_FACTOR));
+        Result = UnpackColor(MarginColor);
     }
 
     // Either use this or GL_FRAMEBUFFER_SRGB
-    Result = pow(Result, vec3(1.0/GAMMA_FACTOR));
+    // if GL_FRAME_BUFFER is used, we can't just use the simple gamma factor because GL_FRAME_BUFFER uses SRGB
+    // Maybe we should either gamma correct everything static on the cpu first, or somehow switch the variables so that ogl automatically
+    // converts the texture
+    Result = linear_to_srgb(Result);
 
     // NOTE(casey): Uncomment this to view the cache texture
+    //
     /* Result = texelFetch(Glyphs, ivec2(ScreenPos), 0).rgb; */
 
     return vec4(Result, 1);

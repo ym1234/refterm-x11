@@ -174,7 +174,7 @@ void set_props(FTFont f) {
 	glUniform2ui(8, 16/2 - 16/10, 16/2 + 16/10); // StrikeThrough
 	glUniform2ui(9, f.cellheight - f.descent + f.underline - (int)(f.underline_thickness  / 2.0 + 0.5),  f.cellheight - f.descent + f.underline - (int)(f.underline_thickness  / 2.0 + 0.5) + f.underline_thickness); // underline
 	glUniform2ui(9, 10, 2);
-	// glEnable(GL_FRAMEBUFFER_SRGB); // GL3 only
+	/* glEnable(GL_FRAMEBUFFER_SRGB); // GL3 only */
 }
 
 static inline bool CursorBack(size_t width, size_t height, int *CursorX, int *CursorY) {

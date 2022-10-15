@@ -1,5 +1,13 @@
 // gcc shape.c -g -fsanitize=undefined -fsanitize=leak -fsanitize=address -lfribidi -lfontconfig -lharfbuzz  -lfreetype -I/usr/include/freetype2 -I/usr/include/fontconfig/ -I/usr/include/harfbuzz/ -I/usr/include/fribidi
-
+//
+//
+//
+//
+//
+// What do we learn from all of this?
+// Of course, that text is fucked up and no one should ever have to deal with it in their life, ever
+//
+//
 #include <hb.h>
 #include <fribidi.h>
 #include <stdbool.h>
@@ -10,7 +18,12 @@
 #include FT_BITMAP_H
 #include FT_LCD_FILTER_H
 
-#include "bicubic_scaling.c"
+#define likely(x) __builtin_expect(x, 1)
+#define unlikely(x) __builtin_expect(x, 0)
+
+#include "scaling.c"
+#include "itemize.c"
+#include "emoji_scanner.c"
 
 void die(char *format, ...) {
 	va_list ap;
@@ -33,7 +46,6 @@ void die(char *format, ...) {
 		}\
 	} while (0);
 
-
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb/stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -41,204 +53,35 @@ void die(char *format, ...) {
 
 // TODO(ym):
 // - FontConfig Cache
-// - Render with freetype
 // - CJK Handling with maybe some config options
 // - Lots and lots and lots of testing because this is just good awful
-// - uuugh i hate this code
-// - Oh yeah better names
+
+
 static FT_Library ft_library;
-
 typedef struct {
-	hb_glyph_position_t *pos;
-	hb_glyph_info_t *info;
-	int offset;
-	bool call;
-} glyph_info;
+	FT_Face f;
+	int load_flags;
+	int hintstyle;
+	int pxsize;
+	int ptsize;
+} Font;
 
+#define FONT_BUFFER_LENGTH 512 // 512 also doesn't seem too bad
 typedef struct {
-	int len;
-	uint32_t *buf;
-} utf32buf;
+	Font main_font;
+	/* glyph_table *CacheTable; */
 
-#define FONT_SIZE 300
-double find_font(FT_Library ft_library, FT_Face *f, hb_language_t language, unsigned int *utf32, int len) {
-	if (language == NULL) printf("Language is nuLl\n");
-	FcPattern *p = FcPatternCreate(); // TODO(ym): Destroy this later
-	FcCharSet *s = FcCharSetCreate();
-	FcLangSet *l = FcLangSetCreate();
+	uint32_t str[FONT_BUFFER_LENGTH];
+	uint32_t bidi_types[FONT_BUFFER_LENGTH];
+	uint32_t bracket_types[FONT_BUFFER_LENGTH];
+	uint32_t embedding_levels[FONT_BUFFER_LENGTH];
 
-	const char *lang_tag = hb_language_to_string(language);
-	printf("Language %s\n", lang_tag);
-	FcLangSetAdd(l, lang_tag); // This doesn't seem to be working, it just returns c?;
-	for (int k = 0; k < len; k++) {
-		FcCharSetAddChar(s, utf32[k]);
-	}
+	hb_buffer_t *hb_buffer;
+	GlyphSlot slot; // TODO(ym): support batch uploads, instead of the render-to-the-slot-then-upload approach
+} FontSystem;
 
-	FcPatternAddDouble(p, FC_PIXEL_SIZE, FONT_SIZE);
-	FcPatternAddCharSet(p, FC_CHARSET, s);
-	FcPatternAddLangSet(p, FC_LANG, l);
-
-	FcConfigSubstitute(NULL, p, FcMatchPattern);
-	FcDefaultSubstitute(p);
-
-	FcResult result;
-	FcPattern *m = FcFontMatch(NULL, p, &result);
-
-	unsigned char *name = NULL;
-	FcPatternGetString(m, FC_FILE, 0, &name);
-	double pixelfixup = 1;
-	FcPatternGetDouble(m, "pixelsizefixupfactor", 0, &pixelfixup);
-	printf("%s\n", name);
-	printf("pixelfixup: %f\n", pixelfixup);
-
-	/* if (!strcmp("/usr/share/fonts/noto/NotoNaskhArabic-Regular.ttf", name)) { */
-	/* 	name = "/usr/share/fonts/noto/NotoSansArabic-Regular.ttf"; //"/usr/share/fonts/noto/NotoSerifDevanagari-Regular.ttf"; */
-	/* } */
-	/* if (!strcmp("/usr/share/fonts/noto/NotoSerifDevanagari-Regular.ttf" */
-	if (FT_New_Face(ft_library, name, 0, f))
-		abort();
-	if (FT_Set_Pixel_Sizes(*f, 0, FONT_SIZE)) {
-		for (int i = 0; i < (*f)->num_fixed_sizes; ++i) {
-			FT_Bitmap_Size size = (*f)->available_sizes[i];
-			printf("height: %d, width: %d\n", size.height, size.width);
-		}
-		FT_Select_Size(*f, 0);
-	}
-
-	FcMatrix *fc_matrix;
-	bool has_matrix = FcPatternGetMatrix(m, FC_MATRIX, 0, &fc_matrix) == FcResultMatch;
-	printf("Has matrix: %d\n",has_matrix );
-	if (has_matrix) {
-		FT_Matrix m = {
-			.xx = fc_matrix->xx * 0x10000,
-			.xy = fc_matrix->xy * 0x10000,
-			.yx = fc_matrix->yx * 0x10000,
-			.yy = fc_matrix->yy * 0x10000,
-		};
-		FT_Set_Transform(*f, &m, NULL); // Doesn't seem to do anything?
-	}
-	return 1; // pixelfixup;
-	/* return 1; // pixelfixup; */
-	/* if (FT_Set_Char_Size(*f, FONT_SIZE*64, FONT_SIZE*64, 0, 0)) */
-		/* abort(); */
-}
-
-typedef struct {
-	int width, height, channels;
-	int glyph_width, glyph_height;
-	int glyph_num;
-	int x, y;
-	int descent, ascent;
-	unsigned char *buf;
-	bool init;
-} drawing_context;
-
-static drawing_context dc;
-
-void draw(drawing_context* dc, hb_buffer_t *hb_buffer, double scale, hb_font_t *hb_font) {
-	FT_Face face = hb_ft_font_get_face(hb_font);
-	if (!dc->init) {
-		drawing_context c = {
-			.width = 6 * 20 * 15,
-			.height = 300,
-			.x = 0,
-			.y = 0,
-			.ascent = round(face->size->metrics.ascender / 64.),
-			.descent = -round(face->size->metrics.descender / 64.),
-			.glyph_height = c.ascent + c.descent,
-			.glyph_width = 0,
-			.buf = malloc(c.width * c.height * 4 * sizeof(char)),
-			.init = true,
-		};
-		c.glyph_height = c.ascent + c.descent;
-		memset(c.buf, 255, c.width * c.height * 4);
-		*dc = c;
-		/* dc->x = 1; */
-	}
-
-	int len = hb_buffer_get_length(hb_buffer);
-	hb_glyph_position_t *pos = hb_buffer_get_glyph_positions(hb_buffer, NULL);
-	hb_glyph_info_t *info = hb_buffer_get_glyph_infos(hb_buffer, NULL);
-
-	for (unsigned int i = 0; i < len; i++) {
-		hb_codepoint_t gid   = info[i].codepoint;
-		hb_glyph_position_t p = pos[i];
-		int top;
-		/* printf("has_color: %d", FT_HAS_COLOR(face)); */
-		/* if (FT_HAS_COLOR(face)) { */
-		/* 	FT_ASSERT(FT_Load_Glyph(face, gid, FT_LOAD_COLOR | FT_LOAD_DEFAULT)); */
-		/* 	FT_ASSERT(FT_Render_Glyph(face->glyph, FT_RENDER_MODE_LCD)); */
-		/* 	top = 0; */
-		/* } else { */
-		int row_start = 0;
-			FT_ASSERT(FT_Load_Glyph(face, gid, FT_LOAD_COLOR | FT_LOAD_DEFAULT));
-			/* FT_ASSERT(FT_Render_Glyph(face->glyph, FT_RENDER_MODE_LCD)); */
-			FT_ASSERT(FT_Render_Glyph(face->glyph, FT_RENDER_MODE_LCD)); // FT_RENDER_MODE_NORMAL)); // FT_RENDER_MODE_LCD));
-			printf("glyph_height: %d\n", dc->glyph_height);
-			top = dc->glyph_height + 1 - dc->descent - face->glyph->bitmap_top - round(p.y_offset/ 64.);
-			// Fix this?
-			if (top < 0)  {
-				printf("top: %d\n", top);
-				row_start = abs(top);
-				top = 0;
-			}
-		/* } */
-		FT_Bitmap bitmap = face->glyph->bitmap;
-
-
-		int left = 4 * (round((dc->x + p.x_offset) / 64.) + face->glyph->bitmap_left);
-		// Test this
-		if (left < 0) {
-			left = 4 * round(dc->x / 64.);
-			dc->x += abs(p.x_offset + face->glyph->bitmap_left);
-		}
-
-		char *buf = bitmap.buffer;
-		int h = (float) bitmap.rows * scale;
-		int w = (float) bitmap.width * scale;
-		int pitch = (float) bitmap.pitch * scale;
-		/* if (scale != 1) { */
-			/* buf = bicubic_scaling(bitmap.buffer, bitmap.width, bitmap.rows, bitmap.pitch / 4, scale); */
-			buf = area_averaging_scale(bitmap.buffer, bitmap.width, bitmap.rows, bitmap.pitch / 4, scale);
-		/* } */
-		printf("h: %d, w: %d, pitch: %d, original_pitch: %d\n", h, w, pitch, bitmap.pitch);
-
-		for (int l = row_start; l < h; l++) {
-			int idx = left + 4 * dc->width * (top + l - row_start);
-			for (int z = 0; z < w; ++z) {
-				switch (bitmap.pixel_mode) {
-					case 7: {
-						// BGRA -> RGBA
-						int k = z * 4;
-						dc->buf[idx++] = (char) buf[4 * l * w + k + 2];
-						dc->buf[idx++] = (char) buf[4 * l * w + k + 1];
-						dc->buf[idx++] = (char) buf[4 * l * w + k];
-						dc->buf[idx++] = (char) buf[4 * l * w + k + 3];
-					} break;
-					case 5: {
-						if (idx % 4 == 3) dc->buf[idx++] = 1;
-						dc->buf[idx++] =  255 - bitmap.buffer[l * bitmap.pitch + z];
-					} break;
-				}
-			}
-		}
-
-		/* stbi_write_png("idk.png", dc->width, dc->height, 3, dc->buf, dc->width * 3); */
-		printf("gid: %d, Bitmap: rows: %d, width: %d, pitch: %d, pixel_mode: %d, bitmap_left %d, bitmap_top: %d, x_advance: %d\n", gid, face->glyph->bitmap.rows, face->glyph->bitmap.width, face->glyph->bitmap.pitch, face->glyph->bitmap.pixel_mode, face->glyph->bitmap_left, face->glyph->bitmap_top, face->glyph->advance.x);
-		unsigned int cluster = info[i].cluster;
-		dc->x += p.x_advance * scale; // face->glyph->advance.x >> 6;
-	}
-}
-
-
-void shape_really(FT_Face fc, double pixelfixup, hb_buffer_t *hb_buffer) {
-	static int x = 0;
-
-	hb_font_t *hb_font;
-	hb_font = hb_ft_font_create (fc, NULL);
-
-	hb_shape (hb_font, hb_buffer, NULL, 0);
-
+void print_buffer(hb_buffer_t *hb_buffer, hb_font_t *hb_font) {
+	/* #if 0 */
 	int len = hb_buffer_get_length(hb_buffer);
 	hb_glyph_position_t *pos = hb_buffer_get_glyph_positions (hb_buffer, NULL);
 	hb_glyph_info_t *info = hb_buffer_get_glyph_infos (hb_buffer, NULL);
@@ -260,158 +103,239 @@ void shape_really(FT_Face fc, double pixelfixup, hb_buffer_t *hb_buffer) {
 		printf ("glyph='%s'	cluster=%d	advance=(%g,%g)	offset=(%g,%g), gid=%x\n",
 				glyphname, cluster, x_advance, y_advance, x_offset, y_offset, gid);
 	}
+	/* #endif */
+}
 
-	draw(&dc, hb_buffer, pixelfixup, hb_font);
+void print_bidi(FriBidiLevel *levels, size_t len) {
+	printf("\n");
+	for (int i = 0; i < len; ++i) {
+		printf("%d ", levels[i]);
+	}
+	printf("\n");
+}
+
+#define FONT_SIZE 30
+double find_font(FT_Library ft_library, FT_Face *f, char *language, unsigned int *utf32, int len) {
+	FcPattern *p = FcPatternCreate(); // TODO(ym): Destroy this later
+	FcCharSet *s = FcCharSetCreate();
+	FcLangSet *l = FcLangSetCreate();
+
+	FcLangSetAdd(l, language);
+	for (int k = 0; k < len; k++) {
+		FcCharSetAddChar(s, utf32[k]);
+	}
+
+	FcPatternAddString(p, FC_STYLE, "monospace");
+	/* FcPatternAddString(p, FC_SPACING, "monospace"); */
+	FcPatternAddDouble(p, FC_PIXEL_SIZE, FONT_SIZE);
+	FcPatternAddCharSet(p, FC_CHARSET, s);
+
+	FcConfigSubstitute(NULL, p, FcMatchPattern);
+	FcDefaultSubstitute(p);
+
+	FcResult result;
+	FcPattern *m = FcFontMatch(NULL, p, &result);
+
+	unsigned char *name;
+	FcPatternGetString(m, FC_FILE, 0, &name);
+	double pixelfixup = 1;
+	FcPatternGetDouble(m, "pixelsizefixupfactor", 0, &pixelfixup);
+
+	if (FT_New_Face(ft_library, name, 0, f)) {
+		die("Couldn't create a freetype face");
+	}
+	if (FT_Set_Char_Size(*f, FONT_SIZE*64, FONT_SIZE*64, 0, 0)) {
+		/* if (FT_Set_Pixel_Sizes(*f, 0, FONT_SIZE)) { */
+		for (int i = 0; i < (*f)->num_fixed_sizes; ++i) {
+			FT_Bitmap_Size size = (*f)->available_sizes[i];
+			printf("height: %d, width: %d\n", size.height, size.width);
+		}
+		FT_Select_Size(*f, 0);
+	}
+
+	FcMatrix *fc_matrix;
+	if (FcPatternGetMatrix(m, FC_MATRIX, 0, &fc_matrix) == FcResultMatch) {
+		FT_Matrix m = {
+			.xx = fc_matrix->xx * 0x10000,
+			.xy = fc_matrix->xy * 0x10000,
+			.yx = fc_matrix->yx * 0x10000,
+			.yy = fc_matrix->yy * 0x10000,
+		};
+		FT_Set_Transform(*f, &m, NULL); // Doesn't seem to do anything?
+	}
+	return pixelfixup;
+}
+
+
+// TODO(YM): These values are already linear, so only the (Fore|Back)Ground Values the TerminalCell sampler need to be gamma corrected
+// TODO(YM): Check if emojis need gamma correction or not, aka whether they are *coverage* values or just plain colors
+// TODO(YM): All this repeated code...
+// They probably are plain colors, because they have an alpha component but ugh that's so annoying
+static inline void copy5(GlyphSlot *dest, FT_Bitmap bitmap, long top, long left) {
+	for (int i = 0; i < bitmap.rows; ++i) {
+		for (int j = 0; j < bitmap.width/3; ++j) {
+			float R = bitmap.buffer[i * bitmap.pitch + 3 * j + 0] / 255.;
+			float G = bitmap.buffer[i * bitmap.pitch + 3 * j + 1] / 255.;
+			float B = bitmap.buffer[i * bitmap.pitch + 3 * j + 2] / 255.;
+			size_t idx = 3 * (left + j) + dest->pitch * (top + i);
+			dest->data[idx + 0] = R;
+			dest->data[idx + 1] = G;
+			dest->data[idx + 2] = B;
+		}
+	}
+}
+
+static inline void copy2(GlyphSlot *dest, FT_Bitmap bitmap, long top, long left) {
+	for (int i = 0; i < bitmap.rows; ++i) {
+		for (int j = 0; j < bitmap.width; ++j) {
+			float val = bitmap.buffer[i * bitmap.pitch + j] / 255.;
+			size_t idx = 3 * (left + j) + dest->pitch * (top + i);
+			dest->data[idx + 0] = val;
+			dest->data[idx + 1] = val;
+			dest->data[idx + 2] = val;
+		}
+	}
+}
+
+static inline void copy1(GlyphSlot *dest, FT_Bitmap bitmap, long top, long left) {
+	for (int i = 0; i < bitmap.rows; ++i) {
+		for (int j = 0; j < bitmap.width; ++j) {
+			char pixel = bitmap.buffer[i * bitmap.pitch + j / 8]; // Is this correct?
+			if (pixel & (0x80 >> j)) {
+				size_t idx = 3 * (left + j) + dest->pitch * (top + i);
+				dest->data[idx + 0] = 1.;
+				dest->data[idx + 1] = 1.;
+				dest->data[idx + 2] = 1.;
+			}
+		}
+	}
+}
+
+// buf format is float RGB
+void render_glyph(GlyphSlot *slot, hb_buffer_t *hb_buffer, size_t start, size_t end, hb_font_t *hb_font, double scale) {
+	hb_glyph_position_t *pos = hb_buffer_get_glyph_positions(hb_buffer, NULL);
+	hb_glyph_info_t *info = hb_buffer_get_glyph_infos(hb_buffer, NULL);
+
+	FT_Face face = hb_ft_font_get_face(hb_font);
+
+	long ascent = ceil(face->size->metrics.ascender * scale / 64.);
+	long descent = ceil(-face->size->metrics.descender * scale / 64.);
+	long glyph_height = ascent + descent;
+
+	for (int i = start; i < end; ++i) {
+		int gid = info[i].codepoint;
+		int x_offset =  round((double) pos[i].x_offset * scale / 64.), y_offset = round((double) pos[i].y_offset * scale / 64.);
+
+		FT_ASSERT(FT_Load_Glyph(face, gid, FT_LOAD_COLOR | FT_LOAD_DEFAULT));
+		FT_ASSERT(FT_Render_Glyph(face->glyph, FT_RENDER_MODE_LCD)); // FT_RENDER_MODE_NORMAL)); // FT_RENDER_MODE_LCD));
+
+		long top = slot->height - descent - face->glyph->bitmap_top * scale - y_offset;
+		if (top < 0) top = 0; // for now, considering  either clipping or making the cells overlap
+		long left = x_offset + face->glyph->bitmap_left * scale;
+
+		FT_Bitmap bitmap = face->glyph->bitmap;
+		// TODO(ym): idk implement this better somehow
+		switch (bitmap.pixel_mode) {
+			case 7:
+				area_averaging_scale(slot, bitmap, top, left, scale);
+				break;
+			case 5:
+				copy5(slot, bitmap, top, left);
+				break;
+			case 2:
+				copy2(slot, bitmap, top, left);
+				break;
+			case 1:
+				copy1(slot, bitmap, top, left);
+				break;
+			default:
+				die("Pixel mode %d has not been implemented yet, please contact the developer\n", bitmap.pixel_mode);
+				break;
+		}
+	}
+}
+
+void render_segment(uint32_t *str, size_t len, size_t offset, size_t seqlen, hb_script_t script, FriBidiLevel level, bool is_emoji) {
+	static hb_buffer_t *hb_buffer;
+	static hb_unicode_funcs_t *unicodedefs;
+	if (!unicodedefs) {
+		unicodedefs = hb_unicode_funcs_get_default();
+	}
+	if (unlikely(!hb_buffer)) {
+		hb_buffer = hb_buffer_create();
+		hb_buffer_pre_allocate(hb_buffer, 4096);
+		assert(hb_buffer_allocation_successful(hb_buffer));
+		hb_buffer_set_unicode_funcs(hb_buffer, unicodedefs);
+		hb_buffer_set_flags(hb_buffer, HB_BUFFER_FLAG_PRESERVE_DEFAULT_IGNORABLES);
+	}
+
+	hb_buffer_clear_contents(hb_buffer);
+	hb_buffer_add_codepoints(hb_buffer, str, len, offset, seqlen);
+	hb_buffer_set_script(hb_buffer, script);
+	hb_buffer_set_direction(hb_buffer, level % 2 == 0 ? HB_DIRECTION_LTR : HB_DIRECTION_RTL);
+	hb_buffer_guess_segment_properties(hb_buffer);
+
+	FT_Face fc;
+	double pixelfixup = find_font(ft_library, &fc, is_emoji ? "und-zsye" : "", str + offset, seqlen);
+
+	hb_font_t *hb_font = hb_ft_font_create (fc, NULL);
+	hb_shape (hb_font, hb_buffer, NULL, 0);
+	print_buffer(hb_buffer, hb_font);
+
+	/* draw(&dc, hb_buffer, pixelfixup, hb_font); */
 	hb_font_destroy (hb_font);
 }
 
+FriBidiLevel *get_embedding_levels(uint32_t *str, size_t len, FriBidiParType *dir) {
+	FriBidiCharType *bidi_types = malloc(len * sizeof(*bidi_types));
+	fribidi_get_bidi_types(str, len, bidi_types);
+	FriBidiBracketType *bracket_types = malloc(len * sizeof(*bracket_types));
+	fribidi_get_bracket_types(str, len, bidi_types, bracket_types);
 
-void shape_really_really_really_now(hb_buffer_t *hb_buffer, hb_script_t script, uint32_t *buf, uint32_t len, uint32_t start, uint32_t seqlen) {
-	hb_buffer_add_codepoints(hb_buffer, buf, len, start, seqlen);
-	hb_buffer_set_script(hb_buffer, script);
-	hb_buffer_set_direction(hb_buffer, HB_DIRECTION_LTR); //level % 2 ? HB_DIRECTION_RTL : HB_DIRECTION_LTR);
-	hb_buffer_guess_segment_properties(hb_buffer);
-	FT_Face fc;
-	hb_language_t lang = hb_buffer_get_language(hb_buffer);
-	double r = find_font(ft_library, &fc, lang, buf  + start, seqlen);
-	shape_really(fc, r, hb_buffer);
+	FriBidiLevel *embedding_levels = malloc(len * sizeof(*embedding_levels));
+	fribidi_get_par_embedding_levels_ex(bidi_types, bracket_types, len, dir, embedding_levels);
+
+	free(bidi_types);
+	free(bracket_types);
+
+	return embedding_levels;
 }
 
-void shape(uint32_t *str, int len, FriBidiLevel *levels, FriBidiStrIndex *V2L) {
-	hb_buffer_t *hb_buffer = hb_buffer_create();
-	hb_unicode_funcs_t *def = hb_unicode_funcs_get_default();
-	hb_buffer_set_unicode_funcs(hb_buffer, def);
+void shape(uint32_t *str, size_t len, FriBidiParType *dir) {
+	FriBidiLevel *embedding_levels = get_embedding_levels(str, len, dir);
+	print_bidi(embedding_levels, len);
 
-	int idx = 0;
+	// TODO(ym): This goes ever each glyph multiple times per itemizer; fix that
+	// TODO(ym): Probably should be like: embedding -> script -> emoji, rather than script -> embedding -> emoji
+	size_t current = 0;
+	while (current < len) {
+		hb_script_t script;
+		uint32_t *end = itemize_script(str + current, len - current, &script);
 
-	hb_script_t idxs = hb_unicode_script(def, str[idx]);
-	FriBidiLevel level = levels[V2L[idx]];
-	/* hb_language_t lang = NULL; */
+		FriBidiLevel bidilevel;
+		FriBidiLevel *end2 = itemize_embeddings(embedding_levels + current, end - str - current, &bidilevel);
 
-	int i;
-	for (i = 1; i < len; ++i) {
-		hb_script_t script = hb_unicode_script(def, str[i]);
-		if (levels[V2L[i]] != level) {
-			printf("new level %d, old level: %d\n", levels[V2L[i]], level);
-		}
-		/* printf(" unicode general category: %d\n", hb_unicode_general_category(def, str.buf[i])); */
-		char newscript[5] = {};
-		hb_tag_to_string(hb_script_to_iso15924_tag(script), newscript);
-		printf("newscript: %s\n", newscript);
-		if (/*script == HB_SCRIPT_COMMON ||  */script == HB_SCRIPT_INHERITED /* || idxs == HB_SCRIPT_UNKNOWN */) script = idxs;
-		if (/*idxs == HB_SCRIPT_COMMON || */ idxs == HB_SCRIPT_INHERITED /* || idxs == HB_SCRIPT_UNKNOWN */) idxs = script;
+		bool is_emoji;
+		end = itemize_emoji(str + current, end2 - embedding_levels - current, &is_emoji);
 
-		// TODO(ym): japanese
-		/* if (script == HB_SCRIPT_HANI) { */
-		/* 	if (idxs == HB_SCRIPT_HIRAGANA || idxs == HB_SCRIPT_KATAKANA) { */
-		/* 		lang = */
-		/* 	} */
-		/* } */
-
-		if (script != idxs || levels[V2L[i]] != level) {
-			shape_really_really_really_now(hb_buffer, idxs, str, len, idx, i - idx);
-			char newscript[5] = {};
-			char oldscript[5] = {};
-			hb_tag_to_string(hb_script_to_iso15924_tag(script), newscript);
-			hb_tag_to_string(hb_script_to_iso15924_tag(idxs), oldscript);
-			printf("newscript: %s, oldscript: %s\n", newscript, oldscript);
-			idx = i;
-			idxs = script;
-			level = levels[V2L[i]];
-			hb_buffer_clear_contents(hb_buffer);
-		}
+		// Shouldn't be done here
+		render_segment(str, len, current, end - str - current, script, bidilevel, is_emoji);
+		current = end - str;
 	}
-
-	if (i - idx){
-		/* char newscript[5] = {}; */
-		char oldscript[5] = {};
-		/* hb_tag_to_string(hb_script_to_iso15924_tag(script), newscript); */
-		hb_tag_to_string(hb_script_to_iso15924_tag(idxs), oldscript);
-		printf("oldscript: %s\n", oldscript);
-		printf("i = %d, idx = %d\n", i, idx);
-		shape_really_really_really_now(hb_buffer, idxs, str, len, idx, i - idx);
-	}
-}
-
-// TODO(ym): instead of repeating code, maybe make the buffer one character big with value -1/0?
-glyph_info really_really_shape(char *str,  int len, int *leftover) {
-	(void) leftover;
-	uint32_t *buf = malloc(len * sizeof(*buf)),
-	utf32len = fribidi_charset_to_unicode(FRIBIDI_CHAR_SET_UTF8, str, len, buf);
-
-	FriBidiParType base  =  FRIBIDI_PAR_ON;
-	FriBidiLevel *levels = malloc(utf32len * sizeof(*levels));
-	FriBidiChar *visual = malloc(utf32len * sizeof(*visual));
-	FriBidiChar *logical = NULL; // malloc(utf32.len * sizeof(*logical));
-	FriBidiStrIndex *V2L = malloc(utf32len * sizeof(*V2L));
-	FriBidiLevel out = fribidi_log2vis(buf, utf32len, &base, visual, logical, V2L, levels);
-
-	shape(visual, utf32len, levels, V2L);
 }
 
 int main(int argc, char *argv[]) {
-	/* if (argc < 2) { */
-	/* 	printf("Please run me with more than 0 arguments"); */
-	/* 	return -1; */
-	/* } */
-	/* const char *str = argv[1]; */
 	FT_Init_FreeType (&ft_library);
-	/* FT_Library_SetLcdFilter(ft_library, FT_LCD_FILTER_DEFAULT); */
-	/* char str[] = "a"; */
-	/* char str[] = "\xF0\x9F\x98\xB6\xE2\x80\x8D\xf0\x9f\x8c\xab"; */
-	char str[] = "\xF0\x9F\x98\x8A\xF0\x9F\x98\xB6\xE2\x80\x8D\xf0\x9f\x8c\xab\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x91\xa7\xe2\x80\x8d\xf0\x9f\x91\xa7\xf0\x9f\xa4\xb9\xf0\x9f\x8f\xbe\xe2\x80\x8d\xe2\x99\x80\xef\xb8\x8f\xf0\x9f\x91\xa8\xf0\x9f\x8f\xbc\xe2\x80\x8d\xf0\x9f\x9a\x80";
-	/* char str[] = "الس\xF0\x9F\x98\x8A\xF0\x9F\x98\xB6\xE2\x80\x8D\xf0\x9f\x8c\xab"; */
-	/* char str[] = "hello world"; */
-	/* char str[] = "\xe1\x84\x82\xe1\x85\xa1\xe1\x84\x82\xe1\x85\xb3\xe1\x86\xab \xe1\x84\x92\xe1\x85\xa5\xe1\x86\xab\xe1\x84\x87\xe1\x85\xa5\xe1\x86\xb8\xe1\x84\x8b\xe1\x85\xb3\xe1\x86\xaf \xe1\x84\x8c\xe1\x85\xae\xe1\x86\xab\xe1\x84\x89\xe1\x85\xae\xe1\x84\x92\xe1\x85\xa1\xe1\x84\x80\xe1\x85\xa9 \xe1\x84\x80\xe1\x85\xae\xe1\x86\xa8\xe1\x84\x80\xe1\x85\xa1\xe1\x84\x85\xe1\x85\xb3\xe1\x86\xaf"; */
-	/* char str[] = "Hello world (السًٌَُلام عليكم\xF0\x9F\x98\x8A\xF0\x9F\x98\xB6\xE2\x80\x8D\xf0\x9f\x8c\xab Hello world 日本語"; */
-	/* char str[] = "Hd"; */
-	/* char str[] = "he said “\xE2\x81\xA7 お前の名前は？日本語 car تعنًَُى عًٌَُربى\xE2\x81\xA9.” “\xE2\x81\xA7نعم\xE2\x81\xA9,” she agreed."; */
-	/* char str[] = "Ленивый рыжий кот شَدَّة latin العَرَبِية"; */
-	/* char str[] = "ﷺ نَهَضْتُ مِنْ مَكَانِي وأَنَا أَشْعُر بِنَشَاطٍ غَرِيب وكَأنّ نَبْعاً مِن القُوّةِ الدَاخِلِيّةِ قَدْ سَرَى فِي جَسَدِي.."; */
-	/* char str[] = "\xe0\xb8\xa1\xe0\xb8\xb5\xe0\xb8\xab\xe0\xb8\xa5\xe0\xb8\xb1\xe0\xb8\x81\xe0\xb8\x90\xe0\xb8\xb2\xe0\xb8\x99\xe0\xb8\x97\xe0\xb8\xb5\xe0\xb9\x88\xe0\xb9\x80\xe0\xb8\x9b\xe0\xb9\x87\xe0\xb8\x99\xe0\xb8\x82\xe0\xb9\x89\xe0\xb8\xad\xe0\xb9\x80\xe0\xb8\x97\xe0\xb9\x87\xe0\xb8\x88\xe0\xb8\x88\xe0\xb8\xa3\xe0\xb8\xb4\xe0\xb8\x87\xe0\xb8\xa2\xe0\xb8\xb7\xe0\xb8\x99\xe0\xb8\xa2\xe0\xb8\xb1\xe0\xb8\x99\xe0\xb8\xa1\xe0\xb8\xb2\xe0\xb8\x99\xe0\xb8\xb2\xe0\xb8\x99\xe0\xb9\x81\xe0\xb8\xa5\xe0\xb9\x89\xe0\xb8\xa7 \xe0\xb8\xa7\xe0\xb9\x88\xe0\xb8\xb2\xe0\xb9\x80\xe0\xb8\x99\xe0\xb8\xb7\xe0\xb9\x89\xe0\xb8\xad\xe0\xb8\xab\xe0\xb8\xb2\xe0\xb8\x97\xe0\xb8\xb5\xe0\xb9\x88\xe0\xb8\xad\xe0\xb9\x88\xe0\xb8\xb2\xe0\xb8\x99\xe0\xb8\xa3\xe0\xb8\xb9\xe0\xb9\x89\xe0\xb9\x80\xe0\xb8\xa3\xe0\xb8\xb7\xe0\xb9\x88\xe0\xb8\xad\xe0\xb8\x87\xe0\xb8\x99\xe0\xb8\xb1\xe0\xb9\x89\xe0\xb8\x99\xe0\xb8\x88\xe0\xb8\xb0\xe0\xb9\x84\xe0\xb8\x9b\xe0\xb8\x81\xe0\xb8\xa7\xe0\xb8\x99\xe0\xb8\xaa\xe0\xb8\xa1\xe0\xb8\xb2\xe0\xb8\x98\xe0\xb8\xb4\xe0\xb8\x82\xe0\xb8\xad\xe0\xb8\x87\xe0\xb8\x84\xe0\xb8\x99\xe0\xb8\xad\xe0\xb9\x88\xe0\xb8\xb2\xe0\xb8\x99\xe0\xb9\x83\xe0\xb8\xab\xe0\xb9\x89\xe0\xb9\x80\xe0\xb8\x82\xe0\xb8\xa7\xe0\xb9\x84\xe0\xb8\x9b\xe0\xb8\x88\xe0\xb8\xb2\xe0\xb8\x81\xe0\xb8\xaa\xe0\xb9\x88\xe0\xb8\xa7\xe0\xb8\x99\xe0\xb8\x97\xe0\xb8\xb5\xe0\xb9\x89\xe0\xb9\x80\xe0\xb8\x9b\xe0\xb9\x87\xe0\xb8\x99"; */
-	/* 	"\xe1\x84\x82\xe1\x85\xa1\xe1\x84\x82\xe1\x85\xb3\xe1\x86\xab \xe1\x84\x92\xe1\x85\xa5\xe1\x86\xab\xe1\x84\x87\xe1\x85\xa5\xe1\x86\xb8\xe1\x84\x8b\xe1\x85\xb3\xe1\x86\xaf \xe1\x84\x8c\xe1\x85\xae\xe1\x86\xab\xe1\x84\x89\xe1\x85\xae\xe1\x84\x92\xe1\x85\xa1\xe1\x84\x80\xe1\x85\xa9 \xe1\x84\x80\xe1\x85\xae\xe1\x86\xa8\xe1\x84\x80\xe1\x85\xa1\xe1\x84\x85\xe1\x85\xb3\xe1\x86\xaf"; */
-	/* char str[] = "A\xcc\x81 A\xcc\x81 A\xcc\x81 A\xcc\x81 A\xcc\x81"; */
-	/* char str[] =  "\xE2\x81\xA7 السلام عليكم ’\xE2\x81\xA6 he said “\xE2\x81\xA7 car MEANS CAR=”\xE2\x81\xA9‘?"; */
+	FT_Library_SetLcdFilter(ft_library, FT_LCD_FILTER_DEFAULT);
 
-	/* char str[] = "Hello world شَدَّة العَرَبِية はたらく魔王さま！"; */
-	/* char str[] = "Lorem Ipsum HEllo world"; */
-	/* char str[] = "\xd7\x91\xd7\x94 \xd7\xa1\xd7\xa4\xd7\xa8\xd7\x95\xd7\xaa \xd7\xaa\xd7\xa7\xd7\xa9\xd7\x95\xd7\xa8\xd7\xaa \xd7\x9c\xd7\xa2\xd7\x91\xd7\xa8\xd7\x99\xd7\xaa \xd7\xaa\xd7\xa0\xd7\x9a, \xd7\x92\xd7\x9d"; */
-	/* char str[] = "\xd7\x97\xd7\x95\xd6\xb9\xd7\x9c\xd6\xb8\xd7\x9d \xd7\x9e\xd6\xb8\xd7\x9c\xd6\xb5\xd7\x90 \xd7\xa6\xd6\xb5\xd7\x99\xd7\xa8\xd6\xb6\xd7\x94 \xd7\x9e\xd6\xb8\xd7\x9c\xd6\xb5\xd7\x90 \xd7\xa4\xd6\xb7\xd6\xbc\xd7\xaa\xd6\xb8\xd6\xbc\xd7\x97  קֻבּוּץ"; */
-	/* char str[] = "\xe0\xa4\xb9\xe0\xa4\xbe\xe0\xa4\xb0\xe0\xa5\x8d\xe0\xa4\xa1\xe0\xa4\xb5\xe0\xa5\x87\xe0\xa4\xb0 \xe0\xa4\xb5\xe0\xa4\xbf\xe0\xa4\x9a\xe0\xa4\xb0\xe0\xa4\xb5\xe0\xa4\xbf\xe0\xa4\xae\xe0\xa4\xb0\xe0\xa5\x8d\xe0\xa4\xb6 \xe0\xa4\x86\xe0\xa4\xaa\xe0\xa4\x95\xe0\xa5\x8b \xe0\xa4\xaa\xe0\xa4\xb9\xe0\xa5\x8b\xe0\xa4\x9a"; */
+	char str[] = "Hello world\xF0\x9F\x98\x8A\xF0\x9F\x98\xB6\xE2\x80\x8D\xf0\x9f\x8c\xab\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x91\xa7\xe2\x80\x8d\xf0\x9f\x91\xa7\xf0\x9f\xa4\xb9\xf0\x9f\x8f\xbe\xe2\x80\x8d\xe2\x99\x80\xef\xb8\x8f\xf0\x9f\x91\xa8\xf0\x9f\x8f\xbc\xe2\x80\x8d\xf0\x9f\x9a\x80 السلام عليكم";
+	size_t len = strlen(str);
 
-	/* char str[]="\xd8\xa7\xd9\x84\xd8\xad\xd9\x85\xd9\x80\xd9\x80\xd9\x80\xd9\x80\xd9\x80\xd9\x80\xd8\xaf"; */
-	/* char str[] = "\xd8\xb1\xd8\xad\xd9\x80\xd9\x80\xd9\x80\xd9\x80\xd9\x80\xd9\x80\xd9\x8a\xd9\x85"; */
-	/* char str[] = "الســــلام"; */
-	/* char str[] = "मराठी लिꣻꣻꣻꣻꣻꣻꣻꣻꣻꣻꣻꣻꣻꣻꣻꣻꣻꣻꣻꣻपी"; */
+	uint32_t *buf = malloc(len * sizeof(*buf));
+	FriBidiParType dir = 0;
 
-	/* char str[] = "\xd6\xb0\xd7\x82\xd6\xa9\xd7\xb2\xd6\xa5\xd6\xa4\xd7\xa0\xd6\xb9\xd6\x9a\xd6\xa9\xd7\xa2\xd7\x99\xd6\xb4\xd6\xa6\xd6\xa5\xd6\x9f\xd6\x98\xd7\xb2\xd6\xb7\xd7\x9f\xd6\xa7\xd7\xa5\xd7\x9d\xd7\xaa\xd6\xb1\xd6\x91"; */
-
-	/* char str[] = "\xe0\xa4\xb9\xe0\xa4\xbe\xe0\xa4\xb0\xe0\xa5\x8d\xe0\xa4\xa1\xe0\xa4\xb5\xe0\xa5\x87\xe0\xa4\xb0 \xe0\xa4\xb5\xe0\xa4\xbf\xe0\xa4\x9a\xe0\xa4\xb0\xe0\xa4\xb5\xe0\xa4\xbf\xe0\xa4\xae\xe0\xa4\xb0\xe0\xa5\x8d\xe0\xa4\xb6 \xe0\xa4\x86\xe0\xa4\xaa\xe0\xa4\x95\xe0\xa5\x8b \xe0\xa4\xaa\xe0\xa4\xb9\xe0\xa5\x8b\xe0\xa4\x9a"; */
-
-	/* char str[] = " अआइईउऊ"; */
-	/* char str[] = "हार्डवेर विचरविमर्श आपको पहोच।"; */
-	/* char str[] = "\xe0\xa4\xb9\xe0\xa4\xbe\xe0\xa4\xb0\xe0\xa5\x8d\xe0\xa4\xa1\xe0\xa4\xb5\xe0\xa5\x87\xe0\xa4\xb0 \xe0\xa4\xb5\xe0\xa4\xbf\xe0\xa4\x9a\xe0\xa4\xb0\xe0\xa4\xb5\xe0\xa4\xbf\xe0\xa4\xae\xe0\xa4\xb0\xe0\xa5\x8d\xe0\xa4\xb6 \xe0\xa4\x86\xe0\xa4\xaa\xe0\xa4\x95\xe0\xa5\x8b \xe0\xa4\xaa\xe0\xa4\xb9\xe0\xa5\x8b\xe0\xa4\x9a"; */
-
-	/* char *str = "السلام "; */
-	/* char *str = "...the music melt̸s͝ in͞ S̷ib͘e̵l̵i͡u̡s̀."; */
-	/* char str[] = "...the music melt\xcc\xb8s\xcd\x9d in\xcd\x9e S\xcc\xb7ib\xcd\x98e\xcc\xb5l\xcc\xb5i\xcd\xa1u\xcc\xa1s\xcc\x80."; */
-	/* int len = sizeof(str) - 1; */
-	/* char *str =" ꜱ̯̤ɪ̫͙ʙᴇ̻ʟ͖ɪ͙͚ᴜ̪̠̝͕̼͓ꜱ̼"; */
-	/* char *str ="ꜱ͘ɪʙ̢ᴇ҉ʟ͞ɪ͟ᴜ͡ꜱ̶ ̸ᴄʀ̕ᴀ̢ꜱ҉ʜ̶ᴇ͞ᴅ!͏"; */
-
-
-	/* char *str = "\xe0\xbc\x8d\xe0\xbd\x85\xe0\xbd\x82\xe0\xbd\xa6\xe0\xbc\x8b\xe0\xbd\x82\xe0\xbd\xa2\xe0\xbe\xa8\xe0\xbd\xba\xe0\xbd\xa6\xe0\xbd\x91\xe0\xbc\x8b\xe0\xbd\x96\xe0\xbd\xa1\xe0\xbd\xa3\xe0\xbd\xa6\xe0\xbc\x8b\xe0\xbd\x96\xe0\xbd\x96\xe0\xbd\x93\xe0\xbc\x8b\xe0\xbd\x96\xe0\xbd\xa6\xe0\xbe\x92\xe0\xbd\xbc\xe0\xbd\x84\xe0\xbd\xa6\xe0\xbc\x8b\xe0\xbd\xa0\xe0\xbd\xa3\xe0\xbe\x90\xe0\xbd\xba\xe0\xbd\xa0\xe0\xbd\xa6\xe0\xbc\x8b\xe0\xbd\x91\xe0\xbd\xa2\xe0\xbe\x97\xe0\xbd\xba\xe0\xbd\x82\xe0\xbc\x8b"; */
-	/* char *str = "ပါဠိစာအမှန် (၁၂) ကြောင်း နှင့် မြန်မာ စာအမှန် (၁၂) ကြောင်း၏"; */
-
-	/* char *str = "\xe1\x9e\x98\xe1\x9e\xb6\xe1\x9e\x8f\xe1\x9f\x92\xe1\x9e\x9a\xe1\x9e\xb6 \xe1\x9f\xa1 \xe1\x9e\x98\xe1\x9e\x93\xe1\x9e\xbb\xe1\x9e\x9f\xe1\x9f\x92\xe1\x9e\x9f\xe1\x9e\x91\xe1\x9e\xb6\xe1\x9f\x86\xe1\x9e\x84\xe1\x9e\xa2\xe1\x9e\x9f\xe1\x9f\x8b \xe1\x9e\x80\xe1\x9e\xbe\xe1\x9e\x8f\xe1\x9e\x98\xe1\x9e\x80\xe1\x9e\x98\xe1\x9e\xb6\xe1\x9e\x93\xe1\x9e\x9f\xe1\x9f\x81\xe1\x9e\x9a\xe1\x9e\xb8\xe1\x9e\x97\xe1\x9e\xb6\xe1\x9e\x96 \xe1\x9e\x93\xe1\x9e\xb7\xe1\x9e\x84\xe1\x9e\x9f\xe1\x9e\x98\xe1\x9e\x97\xe1\x9e\xb6\xe1\x9e\x96 \xe1\x9e\x80\xe1\x9f\x92\xe1\x9e\x93\xe1\x9e\xbb\xe1\x9e\x84\xe1\x9e\x95\xe1\x9f\x92\xe1\x9e\x93\xe1\x9f\x82\xe1\x9e\x80\xe1\x9e\x9f\xe1\x9f\x81\xe1\x9e\x85\xe1\x9e\x80\xe1\x9f\x92\xe1\x9e\x8a\xe1\x9e\xb8\xe1\x9e\x90\xe1\x9f\x92\xe1\x9e\x9b\xe1\x9f\x83\xe1\x9e\x90\xe1\x9f\x92\xe1\x9e\x93\xe1\x9e\xbc\xe1\x9e\x9a\xe1\x9e\x93\xe1\x9e\xb7\xe1\x9e\x84\xe1\x9e\x9f\xe1\x9e\xb7\xe1\x9e\x91\xe1\x9f\x92\xe1\x9e\x92\xe1\x9e\xb7"; */
-	int len = strlen(str);
-
-	/* setlocale( */
-	printf("len: %d\n", len);
-	int leftover = 0;
-	hb_language_t default_language = hb_language_get_default();
-	printf("Default language: %s\n", hb_language_to_string(default_language));
-	really_really_shape(str, len, &leftover);
-	stbi_write_png("idk.png", dc.width, dc.height, 4, dc.buf, dc.width * 4);
+	size_t utf32len = fribidi_charset_to_unicode(FRIBIDI_CHAR_SET_UTF8, str, len, buf);
+	printf("utf32len: %d\n", utf32len);
+	shape(buf, utf32len, &dir);
 	return 0;
 }
