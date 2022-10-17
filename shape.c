@@ -118,6 +118,7 @@ typedef struct {
 	unsigned char *render_buffer2point0; // It's 10x better with 10x less space!?!??!?!
 	size_t render_glyph_num;
 	size_t render_buffer_size;
+	size_t glyph_count;
 	/* GlyphSlot slot; // TODO(ym): support batch uploads, instead of the render-to-the-slot-then-upload approach */
 } FontSystem;
 
@@ -149,10 +150,10 @@ static inline void copy5(GlyphSlot *dest, FT_Bitmap bitmap, long top, long left)
 			float G = bitmap.buffer[i * bitmap.pitch + 3 * j + 1] / 255.;
 			float B = bitmap.buffer[i * bitmap.pitch + 3 * j + 2] / 255.;
 			size_t idx = 4 * (left + j) + dest->pitch * (top + i);
-			dest->data[idx + 0] = R;
-			dest->data[idx + 1] = G;
-			dest->data[idx + 2] = B;
-			dest->data[idx + 3] = 1; // idk
+			dest->data[idx + 0] = dest->data[idx + 0] + R;
+			dest->data[idx + 1] = dest->data[idx + 1] + G;
+			dest->data[idx + 2] = dest->data[idx + 2] + B;
+			dest->data[idx + 3] = (	dest->data[idx + 0] +	dest->data[idx + 1] +	dest->data[idx + 2] )/3; // idk
 		}
 	}
 }
@@ -216,8 +217,7 @@ void render_glyph(GlyphSlot *slot, Font face, int gid, int x_offset, int y_offse
 			break;
 	}
 }
-
-#define FONT_SIZE 20
+#define FONT_SIZE 30
 Font face_from_pattern(FT_Library ft_library, FcPattern *m, size_t requested_size) {
 	Font face = {};
 
@@ -415,22 +415,22 @@ void render_segment(FontSystem *system, size_t offset, size_t seqlen, hb_script_
 	hb_glyph_info_t *info = hb_buffer_get_glyph_infos (system->hb_buffer, NULL);
 
 	long current_cluster = -1;
-	int glyph_counter = 0;
+	/* int glyph_counter = 0; */
 	GlyphSlot slot = {};
 	for (int i = 0; i < len; ++i) {
 		hb_codepoint_t gid  = info[i].codepoint;
 		long cluster = (long) info[i].cluster;
 		int x_offset =  round((double) pos[i].x_offset * system->main_font.scale / 64.), y_offset = round((double) pos[i].y_offset * system->main_font.scale / 64.);
 		if (current_cluster != cluster) {
-			if (glyph_counter >= system->render_glyph_num) {
+			if (system->glyph_count >= system->render_glyph_num) {
 				break;
 			}
 			current_cluster = cluster;
 			slot.width = system->main_font.width;
 			slot.height = system->main_font.height;
 			slot.pitch = system->main_font.width * system->render_glyph_num * 4;
-			slot.data = system->render_buffer + glyph_counter * system->main_font.width * 4;
-			glyph_counter++;
+			slot.data = system->render_buffer + system->glyph_count * system->main_font.width * 4;
+			system->glyph_count++;
 		}
 		render_glyph(&slot, font, gid, x_offset, y_offset);
 	}
@@ -511,6 +511,7 @@ int main(int argc, char *argv[]) {
 	FontSystem *system = fontsystem_new(ft_library, main_font, 0, 0);
 
 	/* char str[] = "Hello world"; */
+	/* char str[] = "Hello world 日本語"; */
 	char str[] = "Hello world السلام عليكم 日本語";
 	size_t len = strlen(str);
 	printf("%d\n", len);

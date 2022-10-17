@@ -1,12 +1,18 @@
-#define ALIGN(x, y) (((x) + (y) - 1) & ~((y) - 1))
 #define IsPowerOfTwo(x) (((x) & ((x)-1)) == 0)
+
+
+long pagealigned(long x) {
+#define ALIGN(x, y) (((x) + (y) - 1) & ~((y) - 1))
+    long pagesize = getps();
+    return ALIGN(x, pagesize);
+}
 
 static source_buffer AllocateSourceBuffer(size_t DataSize)
 {
     source_buffer Result = {0};
 
     long pagesize = getps();
-    DataSize = ALIGN(DataSize, pagesize);
+    DataSize = pagealigned(DataSize);
 
     /* int fd = memfd_create("", MFD_ALLOW_SEALING); */
     int fd = memfd_create("", 0);

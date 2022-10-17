@@ -5,7 +5,6 @@
 typedef struct {
 	size_t width, height;
 	ssize_t pitch;
-	int format; // idk
 	float *data;
 } GlyphSlot;
 
@@ -18,7 +17,6 @@ float interpolate_cubic(float p0, float p1, float p2, float p3, float x) {
 
 	return a * x*x*x + b * x*x + c * x + d;
 }
-
 
 // This is too slow, it can be optimized in multilple ways, but maybe just use a library (with Lanczos interpolation) because it doesn't look that good at small sizes
 char *bicubic_scaling(unsigned char *old_image, int ox, int oy, int pitch, float scale) {
