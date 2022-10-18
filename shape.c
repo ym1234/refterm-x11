@@ -217,7 +217,7 @@ void render_glyph(GlyphSlot *slot, Font face, int gid, int x_offset, int y_offse
 			break;
 	}
 }
-#define FONT_SIZE 30
+#define FONT_SIZE 12
 Font face_from_pattern(FT_Library ft_library, FcPattern *m, size_t requested_size) {
 	Font face = {};
 
@@ -396,6 +396,18 @@ void get_embedding_levels(FontSystem *system) {
 	fribidi_get_par_embedding_levels_ex(system->bidi_types, system->bracket_types, system->len, &system->base_dir, system->embedding_levels);
 }
 
+// TODO(YM): free shit, god why is this library so shitty
+bool intersect(FcPattern *p, uint32_t *str, size_t len) {
+	FcCharSet *charset;
+	FcPatternGetCharSet(p, FC_CHARSET, 0, &charset);
+
+	FcCharSet *s = FcCharSetCreate();
+	for (int k = 0; k < len; k++) {
+		FcCharSetAddChar(s, str[k]);
+	}
+	return FcCharSetIntersectCount(charset, s) == FcCharSetCount(s);
+}
+
 void render_segment(FontSystem *system, size_t offset, size_t seqlen, hb_script_t script, FriBidiLevel level, bool is_emoji) {
 	hb_buffer_clear_contents(system->hb_buffer);
 	hb_buffer_add_codepoints(system->hb_buffer, system->str, system->len, offset, seqlen);
@@ -403,7 +415,13 @@ void render_segment(FontSystem *system, size_t offset, size_t seqlen, hb_script_
 	hb_buffer_set_direction(system->hb_buffer, level % 2 == 0 ? HB_DIRECTION_LTR : HB_DIRECTION_RTL);
 	hb_buffer_guess_segment_properties(system->hb_buffer);
 
-	Font font = find_font(system->ft_library, is_emoji ? "und-zsye" : "", system->str + offset, seqlen);
+
+	Font font = {};
+	if (intersect(system->main_font.pattern, system->str + offset, seqlen)) {
+		font = system->main_font;
+	} else {
+		font = find_font(system->ft_library, is_emoji ? "und-zsye" : "", system->str + offset, seqlen);
+	}
 
 	hb_font_t *hb_font = hb_ft_font_create (font.f, NULL);
 	hb_shape (hb_font, system->hb_buffer, NULL, 0);
@@ -495,10 +513,10 @@ int main(int argc, char *argv[]) {
 	FT_Library ft_library;
 
 	FT_ASSERT(FT_Init_FreeType (&ft_library));
-	FT_ASSERT(FT_Library_SetLcdFilter(ft_library, FT_LCD_FILTER_DEFAULT));
+	/* FT_ASSERT(FT_Library_SetLcdFilter(ft_library, FT_LCD_FILTER_DEFAULT)); */
 
 	unsigned char text[100] = {};
-	unsigned char *patternstring = snprintf(text, 100, "NotoSansMono:pixelsize=%d", FONT_SIZE);
+	unsigned char *patternstring = snprintf(text, 100, "curie:pixelsize=%d", FONT_SIZE);
 	FcPattern *mfpattern = FcNameParse(text);
 	FcConfigSubstitute(NULL, mfpattern, FcMatchPattern);
 	FcDefaultSubstitute(mfpattern);
@@ -512,9 +530,13 @@ int main(int argc, char *argv[]) {
 
 	/* char str[] = "Hello world"; */
 	/* char str[] = "Hello world 日本語"; */
-	char str[] = "Hello world السلام عليكم 日本語";
+
+	/* char str[] = "قَدْ سَرَى فِي جَسَدِي.."; */
+	/* char *str ="ꜱ͘ɪʙ̢ᴇ҉ʟ͞ɪ͟ᴜ͡ꜱ̶ ̸ᴄʀ̕ᴀ̢ꜱ҉ʜ̶ᴇ͞ᴅ!͏"; */
+	char str[] = "Hello world! 日本語";
+	/* char str[] = "Hello world السلام عليكم 日本語"; */
 	size_t len = strlen(str);
-	printf("%d\n", len);
+	printf("len: %d\n", len);
 
 	fontsystem_shape(system, str, len);
 
