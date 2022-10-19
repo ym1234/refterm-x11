@@ -9,6 +9,10 @@
 #include <hb-ft.h>
 #include <fontconfig/fontconfig.h>
 #include <math.h>
+#include <locale.h>
+#define FT_CONFIG_OPTION_ERROR_STRINGS
+#define FT_CONFIG_OPTION_SUBPIXEL_RENDERING
+#include <ft2build.h>
 #include FT_FREETYPE_H
 #include FT_BITMAP_H
 #include FT_LCD_FILTER_H
@@ -21,6 +25,10 @@
 #include "scaling.c"
 #include "itemize.c"
 #include "emoji_scanner.c"
+/* #include "wcwidth.c" */
+
+#define __USE_XOPEN       /* See feature_test_macros(7) */
+#include <wchar.h>
 
 void die(char *format, ...) {
 	va_list ap;
@@ -122,18 +130,18 @@ typedef struct {
 	/* GlyphSlot slot; // TODO(ym): support batch uploads, instead of the render-to-the-slot-then-upload approach */
 } FontSystem;
 
-long getps(void) {
-#if 0
-	return getpagesize();
-#else
-	return sysconf(_SC_PAGESIZE);
-#endif
+static long pagesize;
+
+static inline long getps(void) {
+	if (!pagesize) {
+		pagesize = sysconf(_SC_PAGESIZE);
+	}
+	return pagesize;
 }
 
-long pagealigned(long x) {
+static inline long pagealigned(long x) {
 	// Not a "universal" align primitive (i think?), but works well enough
 #define ALIGN(x, y) (((x) + (y) - 1) & ~((y) - 1))
-    long pagesize = getps();
     return ALIGN(x, pagesize);
 #undef ALIGN
 }
@@ -146,14 +154,24 @@ long pagealigned(long x) {
 static inline void copy5(GlyphSlot *dest, FT_Bitmap bitmap, long top, long left) {
 	for (int i = 0; i < bitmap.rows; ++i) {
 		for (int j = 0; j < bitmap.width/3; ++j) {
+			int x = left + j;
+			int y = top + i;
+			if (x < 0) {
+				/* printf("X went less than zero: %d\n", x); */
+			}
+			/* if (x < 0 || x > dest->width || y < 0 || y > dest->height) continue; */
 			float R = bitmap.buffer[i * bitmap.pitch + 3 * j + 0] / 255.;
 			float G = bitmap.buffer[i * bitmap.pitch + 3 * j + 1] / 255.;
 			float B = bitmap.buffer[i * bitmap.pitch + 3 * j + 2] / 255.;
-			size_t idx = 4 * (left + j) + dest->pitch * (top + i);
+			size_t idx = 4 * x + dest->pitch * y;
+			/* dest->data[idx + 0] = R; */
+			/* dest->data[idx + 1] = G; */
+			/* dest->data[idx + 2] = B; */
+			/* dest->data[idx + 3] = 1; */
 			dest->data[idx + 0] = dest->data[idx + 0] + R;
 			dest->data[idx + 1] = dest->data[idx + 1] + G;
 			dest->data[idx + 2] = dest->data[idx + 2] + B;
-			dest->data[idx + 3] = (	dest->data[idx + 0] +	dest->data[idx + 1] +	dest->data[idx + 2] )/3; // idk
+			dest->data[idx + 3] = (dest->data[idx + 0] +	dest->data[idx + 1] +	dest->data[idx + 2]) / 3; // idk
 		}
 	}
 }
@@ -161,41 +179,55 @@ static inline void copy5(GlyphSlot *dest, FT_Bitmap bitmap, long top, long left)
 static inline void copy2(GlyphSlot *dest, FT_Bitmap bitmap, long top, long left) {
 	for (int i = 0; i < bitmap.rows; ++i) {
 		for (int j = 0; j < bitmap.width; ++j) {
+			int x = left + j;
+			int y = top + i;
+			if (x < 0) {
+				/* x = 0; */
+				/* printf("X went less than zero: %d\n", x); */
+			}
+			/* if (x < 0 || x > dest->width || y < 0 || y > dest->height) continue; */
 			float val = bitmap.buffer[i * bitmap.pitch + j] / 255.;
-			size_t idx = 4 * (left + j) + dest->pitch * (top + i);
-			dest->data[idx + 0] = val;
-			dest->data[idx + 1] = val;
-			dest->data[idx + 2] = val;
-			dest->data[idx + 3] = val;
+			size_t idx = 4 * x + dest->pitch * y;
+			dest->data[idx + 0] = dest->data[idx + 0] + val;
+			dest->data[idx + 1] = dest->data[idx + 1] + val;
+			dest->data[idx + 2] = dest->data[idx + 2] + val;
+			dest->data[idx + 3] = dest->data[idx + 3] + val;
 		}
 	}
 }
 
 static inline void copy1(GlyphSlot *dest, FT_Bitmap bitmap, long top, long left) {
 	for (int i = 0; i < bitmap.rows; ++i) {
-		for (int j = 0; j < bitmap.width; ++j) {
-			char pixel = bitmap.buffer[i * bitmap.pitch + j / 8]; // Is this correct?
-			if (pixel & (0x80 >> j)) {
-				size_t idx = 4 * (left + j) + dest->pitch * (top + i);
-				dest->data[idx + 0] = 1.;
-				dest->data[idx + 1] = 1.;
-				dest->data[idx + 2] = 1.;
-				dest->data[idx + 3] = 1.;
+		for (int j = 0; j < bitmap.pitch; ++j) {
+			char pixel = bitmap.buffer[i * bitmap.pitch + j]; // Is this correct?
+
+			int leftover = MIN(8, bitmap.width - j * 8);
+			for (int z = 0; z < leftover; ++z) {
+				if (pixel & (0x80 >> z)) {
+					size_t idx = 4 * (left + j * 8 + z) + dest->pitch * (top + i);
+					dest->data[idx + 0] = 1.;
+					dest->data[idx + 1] = 1.;
+					dest->data[idx + 2] = 1.;
+					dest->data[idx + 3] = 1.;
+				}
 			}
 		}
 	}
 }
 
 
-void render_glyph(GlyphSlot *slot, Font face, int gid, int x_offset, int y_offset) {
-	FT_ASSERT(FT_Load_Glyph(face.f, gid, FT_LOAD_COLOR | FT_LOAD_DEFAULT)) // TODO(YM): use the face.load_flags;
+void render_glyph(GlyphSlot *slot, Font face, Font mainface, int gid, int x_offset, int y_offset) {
+	FT_ASSERT(FT_Load_Glyph(face.f, gid, FT_LOAD_DEFAULT)); // TODO(YM): use the face.load_flags;
 	FT_ASSERT(FT_Render_Glyph(face.f->glyph, FT_RENDER_MODE_LCD));
-	long top = slot->height - face.descent - face.f->glyph->bitmap_top * face.scale - y_offset;
-	if (top < 0) top = 0;
+	long top = slot->height - mainface.descent - face.f->glyph->bitmap_top * face.scale - y_offset;
+
+	if (top < 0) {
+		printf("top: %d\n", top);
+		top = 0;
+	}
 	long left = x_offset + face.f->glyph->bitmap_left * face.scale;
 
 	FT_Bitmap bitmap = face.f->glyph->bitmap;
-	printf("pixel_mode: %d\n", bitmap.pixel_mode);
 	switch (bitmap.pixel_mode) {
 		case 7:
 			area_averaging_scale(slot, bitmap, top, left, face.scale);
@@ -217,7 +249,7 @@ void render_glyph(GlyphSlot *slot, Font face, int gid, int x_offset, int y_offse
 			break;
 	}
 }
-#define FONT_SIZE 12
+#define FONT_SIZE 30
 Font face_from_pattern(FT_Library ft_library, FcPattern *m, size_t requested_size) {
 	Font face = {};
 
@@ -225,6 +257,10 @@ Font face_from_pattern(FT_Library ft_library, FcPattern *m, size_t requested_siz
 	// Ugh Handle that
 	face.pattern = m;
 	FcPatternGetString(m, FC_FILE, 0, &face.path);
+	if (!strcmp(face.path, "/usr/share/fonts/noto/NotoNastaliqUrdu-Regular.ttf")) {
+		face.path = "/usr/share/fonts/noto/NotoNaskhArabic-Regular.ttf";
+	}
+	printf("Font name: %s\n", face.path);
 	face.scale = 1;
 	FcPatternGetDouble(m, "pixelsizefixupfactor", 0, &face.scale);
 
@@ -237,29 +273,34 @@ Font face_from_pattern(FT_Library ft_library, FcPattern *m, size_t requested_siz
 
 
 	printf("pxsize: %f\n", face.pxsize);
-	if (FT_Set_Pixel_Sizes(face.f, 0, ceil(face.pxsize))) {
-		int result = 0;
-		for (int i = 0; i < face.f->num_fixed_sizes; ++i) {
-			FT_Bitmap_Size size = face.f->available_sizes[i];
-			// TODO(YM):
-			// if (size.height * face.scale < requested_size && /* Check if it is bigger than the last size */) result = i;
-			printf("height: %d, width: %d\n", size.height, size.width);
+	face.height = 0xFFFFFFFF; // uintmax or something
+	/* int iteration = 0; */
+	/* while (face.height > requested_size) { */
+		if (FT_Set_Pixel_Sizes(face.f, 0, ceil(face.pxsize /* - iteration */))) {
+			int result = 0;
+			for (int i = 0; i < face.f->num_fixed_sizes; ++i) {
+				FT_Bitmap_Size size = face.f->available_sizes[i];
+				// TODO(YM):
+				// if (size.height * face.scale < requested_size && /* Check if it is bigger than the last size */) result = i;
+				printf("height: %d, width: %d\n", size.height, size.width);
+			}
+
+			FT_Bitmap_Size size = face.f->available_sizes[0];
+			// TODO(YM): I don't know if this sets the metrics or not, so just set them manually for now
+			FT_Select_Size(face.f, 0);
+			face.height = size.height;
+			face.ascent = size.height;
+			face.descent = 0;
+		} else {
+			face.ascent = ceil(face.f->size->metrics.ascender * face.scale / 64.);
+			face.descent = ceil(-face.f->size->metrics.descender * face.scale / 64.);
+			face.height = face.ascent + face.descent;
+			printf("ascent: %d, descent: %d, height: %d, scale: %f\n", face.ascent, face.descent, face.height, face.scale);
 		}
+		/* iteration++; */
+	/* } */
 
-		FT_Bitmap_Size size = face.f->available_sizes[0];
-		// TODO(YM): I don't know if this sets the metrics or not, so just set them manually for now
-		FT_Select_Size(face.f, 0);
-		face.height = size.height;
-		face.ascent = size.height;
-		face.descent = 0;
-	} else {
-		face.ascent = ceil(face.f->size->metrics.ascender * face.scale / 64.);
-		face.descent = ceil(-face.f->size->metrics.descender * face.scale / 64.);
-		face.height = face.ascent + face.descent;
-		printf("ascent: %d, descent: %d, scale: %f\n", face.ascent, face.descent, face.scale);
-	}
-
-	FT_ASSERT(FT_Load_Char(face.f, 'M', FT_LOAD_DEFAULT));
+	FT_ASSERT(FT_Load_Char(face.f, 'M', FT_LOAD_NO_BITMAP | FT_LOAD_DEFAULT));
 	face.width = ceil(face.f->glyph->advance.x * face.scale / 64.);
 
 	printf("advance.x: %d\n", face.f->glyph->advance.x);
@@ -294,6 +335,7 @@ Font find_font(FT_Library ft_library, char *language, unsigned int *utf32, int l
 	FcPatternAddDouble(p, FC_PIXEL_SIZE, FONT_SIZE);
 	/* FcPatternAddDouble(p, FC_SIZE, FONT_SIZE); */
 	FcPatternAddCharSet(p, FC_CHARSET, s);
+
 
 	FcConfigSubstitute(NULL, p, FcMatchPattern);
 	FcDefaultSubstitute(p);
@@ -351,6 +393,7 @@ FontSystem *fontsystem_new(FT_Library ft_library, Font main_font, size_t texture
 	hb_buffer_pre_allocate(system->hb_buffer, FONT_BUFFER_LENGTH);
 	assert(hb_buffer_allocation_successful(system->hb_buffer));
 	hb_buffer_set_unicode_funcs(system->hb_buffer, hb_unicode_funcs_get_default());
+	hb_buffer_set_cluster_level(system->hb_buffer, HB_BUFFER_CLUSTER_LEVEL_MONOTONE_GRAPHEMES);
 	return system;
 }
 
@@ -412,18 +455,20 @@ void render_segment(FontSystem *system, size_t offset, size_t seqlen, hb_script_
 	hb_buffer_clear_contents(system->hb_buffer);
 	hb_buffer_add_codepoints(system->hb_buffer, system->str, system->len, offset, seqlen);
 	hb_buffer_set_script(system->hb_buffer, script);
-	hb_buffer_set_direction(system->hb_buffer, level % 2 == 0 ? HB_DIRECTION_LTR : HB_DIRECTION_RTL);
+	hb_buffer_set_direction(system->hb_buffer, HB_DIRECTION_LTR);
+	/* hb_buffer_set_direction(system->hb_buffer, level % 2 == 0 ? HB_DIRECTION_LTR : HB_DIRECTION_RTL); */
 	hb_buffer_guess_segment_properties(system->hb_buffer);
 
 
 	Font font = {};
 	if (intersect(system->main_font.pattern, system->str + offset, seqlen)) {
+		/* printf("Using default font\n"); */
 		font = system->main_font;
 	} else {
 		font = find_font(system->ft_library, is_emoji ? "und-zsye" : "", system->str + offset, seqlen);
 	}
 
-	hb_font_t *hb_font = hb_ft_font_create (font.f, NULL);
+	hb_font_t *hb_font = hb_ft_font_create (system->main_font.f, NULL);
 	hb_shape (hb_font, system->hb_buffer, NULL, 0);
 	print_buffer(system->hb_buffer, hb_font);
 
@@ -433,24 +478,105 @@ void render_segment(FontSystem *system, size_t offset, size_t seqlen, hb_script_
 	hb_glyph_info_t *info = hb_buffer_get_glyph_infos (system->hb_buffer, NULL);
 
 	long current_cluster = -1;
-	/* int glyph_counter = 0; */
+	int prev_advance_x = 1;
+	bool empty;
 	GlyphSlot slot = {};
-	for (int i = 0; i < len; ++i) {
-		hb_codepoint_t gid  = info[i].codepoint;
-		long cluster = (long) info[i].cluster;
-		int x_offset =  round((double) pos[i].x_offset * system->main_font.scale / 64.), y_offset = round((double) pos[i].y_offset * system->main_font.scale / 64.);
-		if (current_cluster != cluster) {
-			if (system->glyph_count >= system->render_glyph_num) {
-				break;
+	int idx = 0;
+	while (idx < seqlen) {
+		hb_codepoint_t gid  = info[idx].codepoint;
+		long cluster_start = (long) info[idx].cluster;
+
+		bool start_glyph = gid == 0;
+		int start = idx;
+		int end = idx;
+		while (end < seqlen) {
+			hb_codepoint_t gid  = info[end].codepoint;
+			// shitty comparsion replace with something else
+			if ((gid == 0 && start_glyph) || (gid != 0 && !start_glyph)) {
+				end++;
+				continue;
 			}
-			current_cluster = cluster;
-			slot.width = system->main_font.width;
-			slot.height = system->main_font.height;
-			slot.pitch = system->main_font.width * system->render_glyph_num * 4;
-			slot.data = system->render_buffer + system->glyph_count * system->main_font.width * 4;
-			system->glyph_count++;
+			break;
 		}
-		render_glyph(&slot, font, gid, x_offset, y_offset);
+
+		idx = end;
+		if (start_glyph) {
+			hb_buffer_t *hb_buffer2 = hb_buffer_create();
+			long cluster_end;
+			if (end >= len) {
+				cluster_end = seqlen;
+			} else {
+				cluster_end = info[end].cluster;
+			}
+
+			printf("%d, %d, %d, %d\n", start, end, cluster_start, cluster_end - cluster_start);
+			/* if (level % 2 == 1) { */
+			/* 	int tmp = cluster_start + 1; */
+			/* 	cluster_start = cluster_end; */
+			/* 	cluster_end = tmp; */
+			/* } */
+			/* printf("%d, %d, %d, %d\n", start, end, cluster_start, cluster_end - cluster_start); */
+			hb_buffer_add_codepoints(hb_buffer2, system->str, system->len, offset + cluster_start, cluster_end - cluster_start);
+			hb_buffer_set_script(hb_buffer2, script);
+			hb_buffer_set_direction(hb_buffer2, level % 2 == 0 ? HB_DIRECTION_LTR : HB_DIRECTION_RTL);
+			hb_buffer_guess_segment_properties(hb_buffer2);
+			hb_font_t *hb_font = hb_ft_font_create (font.f, NULL);
+			hb_shape (hb_font, hb_buffer2, NULL, 0);
+
+			hb_glyph_position_t *pos = hb_buffer_get_glyph_positions (hb_buffer2, NULL);
+			hb_glyph_info_t *info = hb_buffer_get_glyph_infos (hb_buffer2, NULL);
+			print_buffer(hb_buffer2, hb_font);
+
+			int len =  hb_buffer_get_length(hb_buffer2);
+			for (int i = 0; i < len; ++i) {
+				hb_codepoint_t gid  = info[i].codepoint;
+				long cluster = (long) info[i].cluster;
+				printf("x_offset: %d, y_offset: %d\n", pos[i].x_offset, pos[i].y_offset && !empty);
+				/* int x_offset =  round((double) pos[i].x_offset * system->main_font.scale / 64.), y_offset = round((double) pos[i].y_offset * system->main_font.scale / 64.); */
+				int x_offset = 0, y_offset = 0;
+				if (current_cluster != cluster || prev_advance_x != 0) { // Maybe prev_advance_x is just enough for this?
+					if (system->glyph_count >= system->render_glyph_num) {
+						break;
+					}
+					current_cluster = cluster;
+					slot.width = system->main_font.width;
+					slot.height = system->main_font.height;
+					slot.pitch = system->main_font.width * system->render_glyph_num * 4;
+					slot.data = system->render_buffer + system->glyph_count * system->main_font.width * 4;
+					system->glyph_count++;
+				}
+				int width = wcwidth(system->str[cluster]);
+
+				if (width > 1) system->glyph_count++;
+				render_glyph(&slot, font, system->main_font, gid, x_offset, y_offset);
+				prev_advance_x = pos[i].x_advance;
+			}
+
+			continue;
+		}
+
+		for (int i = start; i < end; ++i) {
+			hb_codepoint_t gid  = info[i].codepoint;
+			long cluster = (long) info[i].cluster;
+			printf("x_offset: %d, y_offset: %d\n", pos[i].x_offset,pos[i].y_offset && !empty);
+			int x_offset =  round((double) pos[i].x_offset * system->main_font.scale / 64.), y_offset = round((double) pos[i].y_offset * system->main_font.scale / 64.);
+			if (current_cluster != cluster || prev_advance_x != 0) { // Maybe prev_advance_x is just enough for this?
+				if (system->glyph_count >= system->render_glyph_num) {
+					break;
+				}
+				current_cluster = cluster;
+				slot.width = system->main_font.width;
+				slot.height = system->main_font.height;
+				slot.pitch = system->main_font.width * system->render_glyph_num * 4;
+				slot.data = system->render_buffer + system->glyph_count * system->main_font.width * 4;
+				system->glyph_count++;
+			}
+			int width = wcwidth(system->str[cluster]);
+
+			if (width > 1) system->glyph_count++;
+			render_glyph(&slot, system->main_font, system->main_font, gid, x_offset, y_offset);
+			prev_advance_x = pos[i].x_advance;
+		}
 	}
 	/* draw(&dc, system->hb_buffer, pixelfixup, hb_font); */
 	hb_font_destroy (hb_font);
@@ -488,35 +614,53 @@ size_t fontsystem_shape(FontSystem *system, char* utf8, ssize_t len) { // Mixing
 }
 
 void float2char(float *in, unsigned char *out, int height, int width, int pitch) {
+
+	unsigned char BG[3] = {0xFF, 0xFF, 0xFF};
+	unsigned char FG[3] = {0x00, 0x00, 0x00};
+	/* unsigned char FG[3] = {0xC5, 0xC8, 0xC6}; */
+	/* unsigned char BG[3] = {0x1D, 0x1F, 0x21}; */
+
 	for (int i = 0; i < height; ++i) {
 		for (int j = 0; j < width; ++j) {
 			int idx = 4 * (i * pitch + j);
-			int R = in[idx + 0] * 255;
-			int B = in[idx + 1] * 255;
-			int G = in[idx + 2] * 255;
-			int A = in[idx + 3] * 255;
-			if (R > 255) R = 255;
-			if (B > 255) B = 255;
-			if (G > 255) G = 255;
-			if (A > 255) A = 255;
-			out[idx + 0] = R;
-			out[idx + 1] = G;
-			out[idx + 2] = B;
-			out[idx + 3] = A;
+			if (idx < 0) continue;
+			float R = in[idx + 0];
+			float G = in[idx + 1];
+			float B = in[idx + 2];
+			float A = in[idx + 3];
+			unsigned int Ar = 255 * A;
+			unsigned int Rr = (1 - R) * BG[0] + R * FG[0];
+			unsigned int Gr = (1 - G) * BG[1] + G * FG[1];
+			unsigned int Br = (1 - B) * BG[2] + B * FG[2];
+			if (Rr > 255) Rr = FG[0];
+			if (Br > 255) Br = FG[1];
+			if (Gr > 255) Gr = FG[2];
+			if (Ar > 255) Ar = 255;
+			out[idx + 0] = Rr;
+			out[idx + 1] = Gr;
+			out[idx + 2] = Br;
+			out[idx + 3] = 255;
+			/* if (Ar > 0) { */
+			/* 	out[idx + 3] = Ar;//255; */
+			/* } else { */
+			/* 	out[idx + 3] = 255;//Ar; */
+			/* } */
 		}
 	}
 }
 
 int main(int argc, char *argv[]) {
 	FcInit();
+	setlocale(LC_CTYPE, "");
+	getps();
 
 	FT_Library ft_library;
 
 	FT_ASSERT(FT_Init_FreeType (&ft_library));
-	/* FT_ASSERT(FT_Library_SetLcdFilter(ft_library, FT_LCD_FILTER_DEFAULT)); */
+	FT_ASSERT(FT_Library_SetLcdFilter(ft_library, FT_LCD_FILTER_DEFAULT));
 
 	unsigned char text[100] = {};
-	unsigned char *patternstring = snprintf(text, 100, "curie:pixelsize=%d", FONT_SIZE);
+	unsigned char *patternstring = snprintf(text, 100, "Fira Code:pixelsize=%d", FONT_SIZE);
 	FcPattern *mfpattern = FcNameParse(text);
 	FcConfigSubstitute(NULL, mfpattern, FcMatchPattern);
 	FcDefaultSubstitute(mfpattern);
@@ -529,11 +673,24 @@ int main(int argc, char *argv[]) {
 	FontSystem *system = fontsystem_new(ft_library, main_font, 0, 0);
 
 	/* char str[] = "Hello world"; */
-	/* char str[] = "Hello world 日本語"; */
+	/* char str[] = "２日本語Hello world 日本語"; */
+	/* char str[] = "  بِسْمِ "; */
+	/* char str[] = "سُكُونْ Hello world "; */
 
-	/* char str[] = "قَدْ سَرَى فِي جَسَدِي.."; */
+	/* char str[] = "قَدْ.سَرَى.فِي.جَسَدِي.."; */
 	/* char *str ="ꜱ͘ɪʙ̢ᴇ҉ʟ͞ɪ͟ᴜ͡ꜱ̶ ̸ᴄʀ̕ᴀ̢ꜱ҉ʜ̶ᴇ͞ᴅ!͏"; */
-	char str[] = "Hello world! 日本語";
+	/* char str[] = "Hello world!g 日本語"; */
+	/* char str[] = "(/◕ヮ◕)/"; */
+	/* char str[] = "Helloworld!=LoremIpsum!=->/==>"; */
+	char str[] = "-> السلام عليكم Hello world=>==!= ";
+	/* char str[] = "/=!==="; */
+	/* char str[] = "ﷺ القُوّةِ الدَاخِلِيّةِ قَدْ سَرَى فِي جَسَدِي.."; */
+
+	/* char str[] = "-> =>\xe0\xa4\xb9\xe0\xa4\xbe\xe0\xa4\xb0\xe0\xa5\x8d\xe0\xa4\xa1\xe0\xa4\xb5\xe0\xa5\x87\xe0\xa4\xb0 \xe0\xa4\xb5\xe0\xa4\xbf\xe0\xa4\x9a\xe0\xa4\xb0\xe0\xa4\xb5\xe0\xa4\xbf\xe0\xa4\xae\xe0\xa4\xb0\xe0\xa5\x8d\xe0\xa4\xb6 \xe0\xa4\x86\xe0\xa4\xaa\xe0\xa4\x95\xe0\xa5\x8b \xe0\xa4\xaa\xe0\xa4\xb9\xe0\xa5\x8b\xe0\xa4\x9a -> =>"; */
+	/* char str[] = "हारडवर विचरविमरश आपको पहोच"; */
+	/* char str[] = "-> => != 脛に直撃草"; */
+	/* char str[] =  "Hello world -> => السلام عليكم Hello world"; */
+	/* char str[] = "السلام عليكم Hello world 日本語 (・∀・)"; */
 	/* char str[] = "Hello world السلام عليكم 日本語"; */
 	size_t len = strlen(str);
 	printf("len: %d\n", len);
