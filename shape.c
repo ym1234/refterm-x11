@@ -226,8 +226,10 @@ void render_glyph(GlyphSlot *slot, Font face, Font mainface, int gid, int x_offs
 		top = 0;
 	}
 	long left = x_offset + face.f->glyph->bitmap_left * face.scale;
+	printf("top: %d, left: %d\n", top, left);
 
 	FT_Bitmap bitmap = face.f->glyph->bitmap;
+	printf("rows: %d, width: %d\n", bitmap.rows, bitmap.width);
 	switch (bitmap.pixel_mode) {
 		case 7:
 			area_averaging_scale(slot, bitmap, top, left, face.scale);
@@ -274,9 +276,9 @@ Font face_from_pattern(FT_Library ft_library, FcPattern *m, size_t requested_siz
 
 	printf("pxsize: %f\n", face.pxsize);
 	face.height = 0xFFFFFFFF; // uintmax or something
-	/* int iteration = 0; */
-	/* while (face.height > requested_size) { */
-		if (FT_Set_Pixel_Sizes(face.f, 0, ceil(face.pxsize /* - iteration */))) {
+	int iteration = 0;
+	while (face.height > requested_size) {
+		if (FT_Set_Pixel_Sizes(face.f, 0, ceil(face.pxsize  - iteration))) {
 			int result = 0;
 			for (int i = 0; i < face.f->num_fixed_sizes; ++i) {
 				FT_Bitmap_Size size = face.f->available_sizes[i];
@@ -297,8 +299,8 @@ Font face_from_pattern(FT_Library ft_library, FcPattern *m, size_t requested_siz
 			face.height = face.ascent + face.descent;
 			printf("ascent: %d, descent: %d, height: %d, scale: %f\n", face.ascent, face.descent, face.height, face.scale);
 		}
-		/* iteration++; */
-	/* } */
+		iteration++;
+	}
 
 	FT_ASSERT(FT_Load_Char(face.f, 'M', FT_LOAD_NO_BITMAP | FT_LOAD_DEFAULT));
 	face.width = ceil(face.f->glyph->advance.x * face.scale / 64.);
@@ -330,7 +332,7 @@ Font find_font(FT_Library ft_library, char *language, unsigned int *utf32, int l
 		FcCharSetAddChar(s, utf32[k]);
 	}
 
-	/* FcPatternAddString(p, FC_STYLE, "monospace"); */
+	FcPatternAddString(p, FC_STYLE, "monospace");
 	/* FcPatternAddString(p, FC_SPACING, "monospace"); */
 	FcPatternAddDouble(p, FC_PIXEL_SIZE, FONT_SIZE);
 	/* FcPatternAddDouble(p, FC_SIZE, FONT_SIZE); */
@@ -456,7 +458,7 @@ void render_segment(FontSystem *system, size_t offset, size_t seqlen, hb_script_
 	hb_buffer_add_codepoints(system->hb_buffer, system->str, system->len, offset, seqlen);
 	hb_buffer_set_script(system->hb_buffer, script);
 	hb_buffer_set_direction(system->hb_buffer, HB_DIRECTION_LTR);
-	/* hb_buffer_set_direction(system->hb_buffer, level % 2 == 0 ? HB_DIRECTION_LTR : HB_DIRECTION_RTL); */
+	hb_buffer_set_direction(system->hb_buffer, level % 2 == 0 ? HB_DIRECTION_LTR : HB_DIRECTION_RTL);
 	hb_buffer_guess_segment_properties(system->hb_buffer);
 
 
@@ -483,6 +485,7 @@ void render_segment(FontSystem *system, size_t offset, size_t seqlen, hb_script_
 	GlyphSlot slot = {};
 	int idx = 0;
 	while (idx < seqlen) {
+		printf("idx_before: %d\n", idx);
 		hb_codepoint_t gid  = info[idx].codepoint;
 		long cluster_start = (long) info[idx].cluster;
 
@@ -493,30 +496,33 @@ void render_segment(FontSystem *system, size_t offset, size_t seqlen, hb_script_
 			hb_codepoint_t gid  = info[end].codepoint;
 			// shitty comparsion replace with something else
 			if ((gid == 0 && start_glyph) || (gid != 0 && !start_glyph)) {
+				printf("gid: %d\n" , gid);
 				end++;
+				printf("%d\n", end);
 				continue;
 			}
 			break;
 		}
 
 		idx = end;
+		printf("idx_after: %d\n", idx);
 		if (start_glyph) {
 			hb_buffer_t *hb_buffer2 = hb_buffer_create();
 			long cluster_end;
-			if (end >= len) {
-				cluster_end = seqlen;
-			} else {
-				cluster_end = info[end].cluster;
-			}
-
-			printf("%d, %d, %d, %d\n", start, end, cluster_start, cluster_end - cluster_start);
-			/* if (level % 2 == 1) { */
-			/* 	int tmp = cluster_start + 1; */
-			/* 	cluster_start = cluster_end; */
-			/* 	cluster_end = tmp; */
+			/* if (end >= seqlen) { */
+				cluster_end = info[end-1].cluster + 1;
+			/* } else { */
+			/* 	cluster_end = info[end].cluster; */
 			/* } */
-			/* printf("%d, %d, %d, %d\n", start, end, cluster_start, cluster_end - cluster_start); */
-			hb_buffer_add_codepoints(hb_buffer2, system->str, system->len, offset + cluster_start, cluster_end - cluster_start);
+
+			printf("%d, %d, %d, %d, %d\n", start, end, cluster_start, cluster_end, cluster_end - cluster_start);
+			if (level % 2 == 1) {
+				int tmp = cluster_start;
+				cluster_start = cluster_end - 1;
+				cluster_end = tmp + 1;
+			}
+			printf("%d, %d, %d, %d, %d\n", start, end, cluster_start, cluster_end, cluster_end - cluster_start);
+			hb_buffer_add_codepoints(hb_buffer2, system->str, system->len, cluster_start, cluster_end - cluster_start);
 			hb_buffer_set_script(hb_buffer2, script);
 			hb_buffer_set_direction(hb_buffer2, level % 2 == 0 ? HB_DIRECTION_LTR : HB_DIRECTION_RTL);
 			hb_buffer_guess_segment_properties(hb_buffer2);
@@ -531,10 +537,10 @@ void render_segment(FontSystem *system, size_t offset, size_t seqlen, hb_script_
 			for (int i = 0; i < len; ++i) {
 				hb_codepoint_t gid  = info[i].codepoint;
 				long cluster = (long) info[i].cluster;
-				printf("x_offset: %d, y_offset: %d\n", pos[i].x_offset, pos[i].y_offset && !empty);
-				/* int x_offset =  round((double) pos[i].x_offset * system->main_font.scale / 64.), y_offset = round((double) pos[i].y_offset * system->main_font.scale / 64.); */
-				int x_offset = 0, y_offset = 0;
-				if (current_cluster != cluster || prev_advance_x != 0) { // Maybe prev_advance_x is just enough for this?
+				/* printf("x_offset: %d, y_offset: %d\n", pos[i].x_offset, pos[i].y_offset && !empty); */
+				int x_offset =  round((double) pos[i].x_offset * system->main_font.scale / 64.), y_offset = round((double) pos[i].y_offset * system->main_font.scale / 64.);
+				/* int x_offset = 0, y_offset = 0; */
+				if (current_cluster != cluster && prev_advance_x != 0) { // Maybe prev_advance_x is just enough for this?
 					if (system->glyph_count >= system->render_glyph_num) {
 						break;
 					}
@@ -558,9 +564,9 @@ void render_segment(FontSystem *system, size_t offset, size_t seqlen, hb_script_
 		for (int i = start; i < end; ++i) {
 			hb_codepoint_t gid  = info[i].codepoint;
 			long cluster = (long) info[i].cluster;
-			printf("x_offset: %d, y_offset: %d\n", pos[i].x_offset,pos[i].y_offset && !empty);
+			/* printf("x_offset: %d, y_offset: %d\n", pos[i].x_offset,pos[i].y_offset && !empty); */
 			int x_offset =  round((double) pos[i].x_offset * system->main_font.scale / 64.), y_offset = round((double) pos[i].y_offset * system->main_font.scale / 64.);
-			if (current_cluster != cluster || prev_advance_x != 0) { // Maybe prev_advance_x is just enough for this?
+			if (current_cluster != cluster && prev_advance_x != 0) { // Maybe prev_advance_x is just enough for this?
 				if (system->glyph_count >= system->render_glyph_num) {
 					break;
 				}
@@ -615,10 +621,10 @@ size_t fontsystem_shape(FontSystem *system, char* utf8, ssize_t len) { // Mixing
 
 void float2char(float *in, unsigned char *out, int height, int width, int pitch) {
 
-	unsigned char BG[3] = {0xFF, 0xFF, 0xFF};
-	unsigned char FG[3] = {0x00, 0x00, 0x00};
-	/* unsigned char FG[3] = {0xC5, 0xC8, 0xC6}; */
-	/* unsigned char BG[3] = {0x1D, 0x1F, 0x21}; */
+	/* unsigned char BG[3] = {0xFF, 0xFF, 0xFF}; */
+	/* unsigned char FG[3] = {0x00, 0x00, 0x00}; */
+	unsigned char FG[3] = {0xC5, 0xC8, 0xC6};
+	unsigned char BG[3] = {0x1D, 0x1F, 0x21};
 
 	for (int i = 0; i < height; ++i) {
 		for (int j = 0; j < width; ++j) {
@@ -651,7 +657,7 @@ void float2char(float *in, unsigned char *out, int height, int width, int pitch)
 
 int main(int argc, char *argv[]) {
 	FcInit();
-	setlocale(LC_CTYPE, "");
+	setlocale(LC_CTYPE, ""); // required for a sane wcwidth
 	getps();
 
 	FT_Library ft_library;
@@ -673,7 +679,7 @@ int main(int argc, char *argv[]) {
 	FontSystem *system = fontsystem_new(ft_library, main_font, 0, 0);
 
 	/* char str[] = "Hello world"; */
-	/* char str[] = "２日本語Hello world 日本語"; */
+	char str[] = "السلام عليكم２日本語 Hello world 日本語 ->";
 	/* char str[] = "  بِسْمِ "; */
 	/* char str[] = "سُكُونْ Hello world "; */
 
@@ -682,14 +688,12 @@ int main(int argc, char *argv[]) {
 	/* char str[] = "Hello world!g 日本語"; */
 	/* char str[] = "(/◕ヮ◕)/"; */
 	/* char str[] = "Helloworld!=LoremIpsum!=->/==>"; */
-	char str[] = "-> السلام عليكم Hello world=>==!= ";
+	/* char str[] = "Hel -> السلام عليكم Hello world=>==!= "; */
 	/* char str[] = "/=!==="; */
 	/* char str[] = "ﷺ القُوّةِ الدَاخِلِيّةِ قَدْ سَرَى فِي جَسَدِي.."; */
 
-	/* char str[] = "-> =>\xe0\xa4\xb9\xe0\xa4\xbe\xe0\xa4\xb0\xe0\xa5\x8d\xe0\xa4\xa1\xe0\xa4\xb5\xe0\xa5\x87\xe0\xa4\xb0 \xe0\xa4\xb5\xe0\xa4\xbf\xe0\xa4\x9a\xe0\xa4\xb0\xe0\xa4\xb5\xe0\xa4\xbf\xe0\xa4\xae\xe0\xa4\xb0\xe0\xa5\x8d\xe0\xa4\xb6 \xe0\xa4\x86\xe0\xa4\xaa\xe0\xa4\x95\xe0\xa5\x8b \xe0\xa4\xaa\xe0\xa4\xb9\xe0\xa5\x8b\xe0\xa4\x9a -> =>"; */
-	/* char str[] = "हारडवर विचरविमरश आपको पहोच"; */
-	/* char str[] = "-> => != 脛に直撃草"; */
 	/* char str[] =  "Hello world -> => السلام عليكم Hello world"; */
+	/* char str[] = "Hello world -> == السلام عليكم"; */
 	/* char str[] = "السلام عليكم Hello world 日本語 (・∀・)"; */
 	/* char str[] = "Hello world السلام عليكم 日本語"; */
 	size_t len = strlen(str);
