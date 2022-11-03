@@ -50,7 +50,7 @@ typedef struct {
 	Atom wmdeletewin, netwmpid, netwmiconname, netwmname;
 } XWindow;
 
-static size_t MAX_SEGMENTS =  10485760;//  0x600000;
+static size_t MAX_SEGMENTS = 10485760;//  0x600000;
 /* #define MAX_SEGMENTS 0x6000 */
 typedef struct {
 	source_buffer buf;

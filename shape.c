@@ -259,9 +259,9 @@ Font face_from_pattern(FT_Library ft_library, FcPattern *m, size_t requested_siz
 	// Ugh Handle that
 	face.pattern = m;
 	FcPatternGetString(m, FC_FILE, 0, &face.path);
-	if (!strcmp(face.path, "/usr/share/fonts/noto/NotoNastaliqUrdu-Regular.ttf")) {
-		face.path = "/usr/share/fonts/noto/NotoNaskhArabic-Regular.ttf";
-	}
+	/* if (!strcmp(face.path, "/usr/share/fonts/noto/NotoNastaliqUrdu-Regular.ttf")) { */
+	/* 	face.path = "/usr/share/fonts/noto/NotoNaskhArabic-Regular.ttf"; */
+	/* } */
 	printf("Font name: %s\n", face.path);
 	face.scale = 1;
 	FcPatternGetDouble(m, "pixelsizefixupfactor", 0, &face.scale);
@@ -276,9 +276,9 @@ Font face_from_pattern(FT_Library ft_library, FcPattern *m, size_t requested_siz
 
 	printf("pxsize: %f\n", face.pxsize);
 	face.height = 0xFFFFFFFF; // uintmax or something
-	int iteration = 0;
-	while (face.height > requested_size) {
-		if (FT_Set_Pixel_Sizes(face.f, 0, ceil(face.pxsize  - iteration))) {
+	/* int iteration = 0; */
+	/* while (face.height > requested_size) { */
+		if (FT_Set_Pixel_Sizes(face.f, 0, ceil(face.pxsize /* - iteration */))) {
 			int result = 0;
 			for (int i = 0; i < face.f->num_fixed_sizes; ++i) {
 				FT_Bitmap_Size size = face.f->available_sizes[i];
@@ -299,8 +299,8 @@ Font face_from_pattern(FT_Library ft_library, FcPattern *m, size_t requested_siz
 			face.height = face.ascent + face.descent;
 			printf("ascent: %d, descent: %d, height: %d, scale: %f\n", face.ascent, face.descent, face.height, face.scale);
 		}
-		iteration++;
-	}
+		/* iteration++; */
+	/* } */
 
 	FT_ASSERT(FT_Load_Char(face.f, 'M', FT_LOAD_NO_BITMAP | FT_LOAD_DEFAULT));
 	face.width = ceil(face.f->glyph->advance.x * face.scale / 64.);
@@ -679,7 +679,7 @@ int main(int argc, char *argv[]) {
 	FontSystem *system = fontsystem_new(ft_library, main_font, 0, 0);
 
 	/* char str[] = "Hello world"; */
-	char str[] = "السلام عليكم２日本語 Hello world 日本語 ->";
+	/* char str[] = "السلام عليكم２日本語 Hello world 日本語 ->"; */
 	/* char str[] = "  بِسْمِ "; */
 	/* char str[] = "سُكُونْ Hello world "; */
 
@@ -695,7 +695,7 @@ int main(int argc, char *argv[]) {
 	/* char str[] =  "Hello world -> => السلام عليكم Hello world"; */
 	/* char str[] = "Hello world -> == السلام عليكم"; */
 	/* char str[] = "السلام عليكم Hello world 日本語 (・∀・)"; */
-	/* char str[] = "Hello world السلام عليكم 日本語"; */
+	char str[] = "Hello world السلام عليكم 日本語";
 	size_t len = strlen(str);
 	printf("len: %d\n", len);
 

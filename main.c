@@ -62,6 +62,7 @@ long getps(void) {
 #include "ogl.c"
 #include "tty.c"
 #include "window.c"
+#include "vt.c"
 
 // This sort of works, but the errors just keep pilling up with each iteration and it ends up looking like a slightly different color
 /* unsigned int gamma_correct(unsigned int color) { */
@@ -129,7 +130,6 @@ void SetCell(Terminal *t, int x, int y, char ch) {
 }
 
 void ProcessInput(Terminal *t, TCursor *cursor, source_buffer_range ob) {
-
 	TracyCZoneN(ctx, "processing input", true);
 	assert(t->sg);
 

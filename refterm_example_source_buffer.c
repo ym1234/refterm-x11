@@ -70,7 +70,7 @@ static source_buffer_range ConsumeCountBack(source_buffer_range Source, size_t C
     return Result;
 }
 
-static source_buffer_range ConsumeCount(source_buffer_range Source, size_t Count)
+static inline source_buffer_range ConsumeCount(source_buffer_range Source, size_t Count)
 {
     source_buffer_range Result = Source;
 
@@ -140,6 +140,18 @@ static void CommitWrite(source_buffer *Buffer, size_t Size)
     Buffer->RelativePoint = (Buffer->RelativePoint >= Buffer->DataSize) ? WrappedRelative : Buffer->RelativePoint;
 
     assert(Buffer->RelativePoint < Buffer->DataSize);
+}
+
+static inline char PeekToken(source_buffer_range *Range, int Ordinal)
+{
+    char Result = 0;
+
+    if(Ordinal < Range->Count)
+    {
+        Result = Range->Data[Ordinal];
+    }
+
+    return Result;
 }
 
 

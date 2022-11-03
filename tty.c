@@ -95,7 +95,7 @@ void execsh(char *cmd, char **args) {
 	setenv("USER", pw->pw_name, 1);
 	setenv("SHELL", sh, 1);
 	setenv("HOME", pw->pw_dir, 1);
-	setenv("TERM", "HELLO", 1);
+	setenv("TERM", "xterm", 1);
 
 	signal(SIGCHLD, SIG_DFL);
 	signal(SIGHUP, SIG_DFL);
